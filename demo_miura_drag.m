@@ -23,6 +23,9 @@ if dragStepLength <= 0 || nDragSteps < 1 || ...
 end
 
 %% Zero-displacement model
+% Time model setup and numerical simulation separately from animation.
+simulationCpuStart = cputime;
+simulationTimer = tic;
 model = load(modelFile,'x0','y0','z0','B','T', ...
     'mainPointIndices','fix','panels');
 x0 = model.x0(:);
@@ -110,8 +113,20 @@ solverOptions = struct('Regularization',regularization, ...
 correctionStepLength = dragStepLength;
 minimumCorrectionStepLength = dragStepLength/2^20;
 
+% Count all solver work, including failed trials and angle-boundary searches.
+stepWallTime = zeros(nDragSteps,1);
+totalLmCalls = 0;
+totalLmIterations = 0;
+totalAcceptedSubsteps = 0;
+failedCorrections = 0;
+angleLimitTrials = 0;
+angleBisections = 0;
+setupTime = toc(simulationTimer);
+setupCpuTime = cputime-simulationCpuStart;
+solveCpuStart = cputime;
 solveTimer = tic;
 for stepIndex = 1:nDragSteps
+    stepTimer = tic;
     remainingStepLength = dragStepLength;
     substepCount = 0;
     stepMaximumResidual = 0;
@@ -134,6 +149,8 @@ for stepIndex = 1:nDragSteps
         [trialMasterDisplacement,solverInfo] = MiuraPerturbCorrect( ...
             targetMasterDisplacement,rigidityDirections, ...
             rigidityReferences,rigidityOffsets,solverOptions);
+        totalLmCalls = totalLmCalls+1;
+        totalLmIterations = totalLmIterations+solverInfo.iterations;
 
         if solverInfo.exitflag > 0 && solverInfo.constraintSatisfied
             trialCoordinates = [x0,y0,z0] ...
@@ -152,6 +169,7 @@ for stepIndex = 1:nDragSteps
             if trialMaximumRotationAngle > ...
                     maximumRotationAngle+rotationAngleTolerance
                 rejectedRotationAngle = trialMaximumRotationAngle;
+                angleLimitTrials = angleLimitTrials+1;
 
                 % Bisect the perturbation and rerun LM to reach the angle boundary.
                 angleBaseMasterDisplacement = masterDisplacement;
@@ -177,6 +195,10 @@ for stepIndex = 1:nDragSteps
                         candidateTargetMasterDisplacement, ...
                         rigidityDirections,rigidityReferences, ...
                         rigidityOffsets,solverOptions);
+                    totalLmCalls = totalLmCalls+1;
+                    totalLmIterations = totalLmIterations ...
+                        +candidateSolverInfo.iterations;
+                    angleBisections = angleBisections+1;
                     if candidateSolverInfo.exitflag <= 0 || ...
                             ~candidateSolverInfo.constraintSatisfied
                         error('demo_miura_drag:AngleBoundaryCorrectionFailed', ...
@@ -268,6 +290,7 @@ for stepIndex = 1:nDragSteps
             stepMaximumRotationAngle = max( ...
                 stepMaximumRotationAngle,trialMaximumRotationAngle);
         else
+            failedCorrections = failedCorrections+1;
             correctionStepLength = trialStepLength/2;
             if correctionStepLength < minimumCorrectionStepLength
                 error('demo_miura_drag:CorrectionFailed', ...
@@ -285,16 +308,24 @@ for stepIndex = 1:nDragSteps
     maximumResidual = max(maximumResidual,stepMaximumResidual);
     maximumAcceptedRotationAngle = max( ...
         maximumAcceptedRotationAngle,stepMaximumRotationAngle);
+    totalAcceptedSubsteps = totalAcceptedSubsteps+substepCount;
 
-    fprintf(['Step %d/%d: %d LM substeps, correction step %.4g, ' ...
+    fprintf(['Step %d/%d: %d accepted substeps, correction step %.4g, ' ...
         'max|c| %.3e, max angle %.3f deg\n'], ...
         stepIndex,nDragSteps,substepCount,correctionStepLength, ...
         stepMaximumResidual,rad2deg(stepMaximumRotationAngle));
+    stepWallTime(stepIndex) = toc(stepTimer);
     if angleLimitReached
         break
     end
 end
 solveTime = toc(solveTimer);
+solveCpuTime = cputime-solveCpuStart;
+simulationTime = toc(simulationTimer);
+simulationCpuTime = cputime-simulationCpuStart;
+stepWallTime = stepWallTime(1:completedSteps);
+averageStepWallTime = solveTime/completedSteps;
+averageStepCpuTime = solveCpuTime/completedSteps;
 
 xHistory = xHistory(:,1:completedSteps+1);
 yHistory = yHistory(:,1:completedSteps+1);
@@ -305,6 +336,26 @@ z_fs = zHistory(:,end);
 fprintf(['Finished %d/%d accepted steps in %.3f s; max|c| %.3e, ' ...
     'max angle %.3f deg.\n'],completedSteps,nDragSteps,solveTime, ...
     maximumResidual,rad2deg(maximumAcceptedRotationAngle));
+
+% CPU time sums MATLAB process/thread work; wall time is elapsed time.
+fprintf(['Timing (animation excluded): setup %.6f s wall / %.6f s CPU; ' ...
+    'simulation total %.6f s wall / %.6f s CPU.\n'], ...
+    setupTime,setupCpuTime,simulationTime,simulationCpuTime);
+fprintf('Solve loop: %.6f s wall / %.6f s CPU.\n', ...
+    solveTime,solveCpuTime);
+fprintf(['Mean per accepted drag step: %.3f ms wall / %.3f ms CPU; ' ...
+    'wall median %.3f ms, range %.3f-%.3f ms.\n'], ...
+    1000*averageStepWallTime,1000*averageStepCpuTime, ...
+    1000*median(stepWallTime),1000*min(stepWallTime),1000*max(stepWallTime));
+fprintf(['Solver work: %d accepted substeps; %d LM calls; ' ...
+    '%d LM outer iterations (%.2f per call); %d failed corrections; ' ...
+    '%d angle-limit trials; %d angle bisections.\n'], ...
+    totalAcceptedSubsteps,totalLmCalls,totalLmIterations, ...
+    totalLmIterations/totalLmCalls,failedCorrections,angleLimitTrials, ...
+    angleBisections);
+if angleLimitReached
+    fprintf('The mean includes the final partial drag step at the angle limit.\n');
+end
 
 %% Animation
 xLimits = [min(xHistory(:)),max(xHistory(:))];
