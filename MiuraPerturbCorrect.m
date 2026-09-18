@@ -36,7 +36,7 @@ end
 targetMasterDisplacement = targetMasterDisplacement(:);
 masterDisplacement = targetMasterDisplacement;
 % Validate once and cache fixed factors outside the iterative hot path.
-[residual,jacobian,residualCurvature] = AffineMetricResidualJacobian( ...
+[residual,jacobian] = AffineMetricResidualJacobian( ...
     masterDisplacement,constraintDirections,referenceComponents,gij);
 directionU = constraintDirections(:,:,1);
 directionV = constraintDirections(:,:,2);
@@ -49,6 +49,21 @@ referenceMagnitude = sqrt(sum(referenceU.^2,2).*sum(referenceV.^2,2));
 constraintScale = max([1;referenceMagnitude;abs(gij)]);
 nMasterDof = numel(masterDisplacement);
 diagonalIndices = 1:nMasterDof+1:nMasterDof^2;
+% Precompute the distinct coefficients of the symmetric coordinate curvature.
+nFreeMasters = size(directionU,2);
+[curvatureRow,curvatureColumn] = find(triu(true(nFreeMasters)));
+curvatureFactors = (directionU(:,curvatureRow).*directionV(:,curvatureColumn) ...
+    +directionV(:,curvatureRow).*directionU(:,curvatureColumn)).';
+upperIndices = curvatureRow+(curvatureColumn-1)*nFreeMasters;
+lowerIndices = curvatureColumn+(curvatureRow-1)*nFreeMasters;
+curvatureMap = zeros(nFreeMasters);
+curvatureMap(upperIndices) = 1:numel(upperIndices);
+curvatureMap(lowerIndices) = 1:numel(lowerIndices);
+curvatureMap = repmat(curvatureMap(:),3,1);
+blockIndices = (1:nFreeMasters).'+(0:nFreeMasters-1)*nMasterDof;
+blockOffset = nFreeMasters*(nMasterDof+1);
+curvatureIndices = [blockIndices(:);blockIndices(:)+blockOffset; ...
+    blockIndices(:)+2*blockOffset];
 mu = [];
 exitflag = 0;
 iterations = 0;
@@ -57,20 +72,12 @@ relativeStep = inf;
 for iteration = 1:maxIterations
     iterations = iteration;
 
-    % Use exact first and second derivatives of the quadratic constraints.
-    if iteration > 1
-        [residual,jacobian,residualCurvature] = EvaluateLowRankConstraints( ...
-            masterDisplacement,directionU,directionV,referenceU,referenceV,gij);
-    end
+    % Residual and Jacobian belong to the current accepted state.
     targetDifference = masterDisplacement-targetMasterDisplacement;
     objective = 0.5*(residual.'*residual) ...
         +0.5*regularization*(targetDifference.'*targetDifference);
     gradient = jacobian.'*residual+regularization*targetDifference;
-    hessian = jacobian.'*jacobian+residualCurvature;
-    hessian(diagonalIndices) = hessian(diagonalIndices)+regularization;
-    hessian = 0.5*(hessian+hessian.');
-
-    if any(~isfinite([objective;gradient;hessian(:)]))
+    if any(~isfinite([objective;gradient]))
         exitflag = -2;
         break
     end
@@ -83,6 +90,17 @@ for iteration = 1:maxIterations
     end
     if gradientMeasure <= gradientTolerance
         exitflag = 2;
+        break
+    end
+
+    % Assemble exact curvature only when another step is needed.
+    curvatureValues = curvatureFactors*residual;
+    hessian = jacobian.'*jacobian;
+    hessian(curvatureIndices) = hessian(curvatureIndices)+curvatureValues(curvatureMap);
+    hessian(diagonalIndices) = hessian(diagonalIndices)+regularization;
+    hessian = 0.5*(hessian+hessian.');
+    if any(~isfinite(hessian(:)))
+        exitflag = -2;
         break
     end
 
@@ -115,7 +133,7 @@ for iteration = 1:maxIterations
         end
 
         trialMasterDisplacement = masterDisplacement+step;
-        residualTrial = EvaluateLowRankConstraints( ...
+        [residualTrial,projectedUTrial,projectedVTrial] = EvaluateLowRankResidual( ...
             trialMasterDisplacement,directionU,directionV,referenceU,referenceV,gij);
         trialTargetDifference = trialMasterDisplacement ...
             -targetMasterDisplacement;
@@ -133,6 +151,10 @@ for iteration = 1:maxIterations
 
         if reductionRatio > 1e-4 && actualReduction > 0
             masterDisplacement = trialMasterDisplacement;
+            % Reuse the accepted residual/projections; rejected trials never overwrite them.
+            residual = residualTrial;
+            jacobian = EvaluateLowRankJacobian(projectedUTrial,projectedVTrial, ...
+                directionU,directionV,referenceU,referenceV);
             mu = max(mu*max(1/3,1-(2*reductionRatio-1)^3), ...
                 eps*max(1,norm(hessian,inf)));
             accepted = true;
@@ -149,15 +171,13 @@ for iteration = 1:maxIterations
     end
 end
 
-% Report objective stationarity and feasibility as separate diagnostics.
-[finalResidual,finalJacobian] = EvaluateLowRankConstraints( ...
-    masterDisplacement,directionU,directionV,referenceU,referenceV,gij);
+% Reuse current-state derivatives, including the last accepted iteration-limit step.
 finalTargetDifference = masterDisplacement-targetMasterDisplacement;
-finalGradient = finalJacobian.'*finalResidual ...
+finalGradient = jacobian.'*residual ...
     +regularization*finalTargetDifference;
-maxResidual = norm(finalResidual,inf);
+maxResidual = norm(residual,inf);
 gradientInfinityNorm = norm(finalGradient,inf);
-finalObjective = 0.5*(finalResidual.'*finalResidual) ...
+finalObjective = 0.5*(residual.'*residual) ...
     +0.5*regularization*(finalTargetDifference.'*finalTargetDifference);
 if isempty(mu)
     mu = 0;
@@ -169,7 +189,7 @@ info.iterations = iterations;
 info.finalDamping = mu;
 info.maxResidual = maxResidual;
 info.gradientInfinityNorm = gradientInfinityNorm;
-info.constraintMeasure = norm(finalResidual)/(sqrt(nConstraints)*constraintScale);
+info.constraintMeasure = norm(residual)/(sqrt(nConstraints)*constraintScale);
 info.gradientMeasure = norm(finalGradient)/max(1,sqrt(2*finalObjective));
 info.relativeStep = relativeStep;
 info.objective = finalObjective;

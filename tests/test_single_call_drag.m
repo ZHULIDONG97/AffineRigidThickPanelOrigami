@@ -249,7 +249,8 @@ originalPath = path;
 sandboxCleanup = onCleanup(@() restoreSandbox( ...
     originalFolder,originalPath,sandboxDirectory));
 files = {'AffineMetricConstraintFactors.m','AffineMetricResidualJacobian.m', ...
-    'EvaluateLowRankConstraints.m','MiuraPerturbCorrect.m', ...
+    'EvaluateLowRankConstraints.m','EvaluateLowRankResidual.m', ...
+    'EvaluateLowRankJacobian.m','MiuraPerturbCorrect.m', ...
     'RotationAngle.m','four_panel_reference.mat'};
 for fileIndex = 1:numel(files)
     copyfile(fullfile(codeRoot,files{fileIndex}),sandboxDirectory);
@@ -357,6 +358,7 @@ writeText(fullfile(sandboxDirectory,'demo_miura_drag.m'),scriptText);
 addpath(sandboxDirectory,'-begin');
 cd(sandboxDirectory);
 clear MiuraPerturbCorrect RotationAngle demo_miura_drag
+clear EvaluateLowRankResidual EvaluateLowRankJacobian
 evalc('demo_miura_drag;');
 
 state = struct('attemptedSteps',attemptedSteps,'completedSteps',completedSteps, ...
@@ -396,6 +398,7 @@ function restoreSandbox(originalFolder,originalPath,sandboxDirectory)
 cd(originalFolder);
 path(originalPath);
 clear MiuraPerturbCorrect RotationAngle demo_miura_drag
+clear EvaluateLowRankResidual EvaluateLowRankJacobian
 expectedParent = fileparts(fullfile(tempdir,'test_fixture'));
 assert(strcmpi(fileparts(sandboxDirectory),expectedParent), ...
     'Refusing to remove a fixture outside the temporary directory.');

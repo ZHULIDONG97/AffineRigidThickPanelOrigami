@@ -141,3 +141,50 @@ verifyEqual(testCase,info.iterations,1);
 verifyFalse(testCase,isfinite(info.objective));
 verifyFalse(testCase,info.constraintSatisfied);
 end
+
+function testPackedCurvatureStepAndUpdatedDiagnostics(testCase)
+% A coupled two-master problem exercises off-diagonal curvature and a changing J.
+directions = zeros(3,2,2);
+directions(:,:,1) = [1 2;0.5 -1;1.5 0.4];
+directions(:,:,2) = directions(:,:,1);
+references = zeros(3,3,2);
+gij = -[1;2;3];
+target = [0.2;-0.1;0.05;0.3;-0.15;0.1];
+options = struct('Regularization',0.25,'MaxIterations',1, ...
+    'ResidualTolerance',1e-14,'GradientTolerance',1e-14,'StepTolerance',1e-14);
+[initialResidual,initialJacobian,curvature] = ...
+    AffineMetricResidualJacobian(target,directions,references,gij);
+% The public evaluator independently assembles curvature by matrix products.
+hessian = initialJacobian.'*initialJacobian+curvature+options.Regularization*eye(6);
+hessian = 0.5*(hessian+hessian.');
+hessianScale = max(1,norm(hessian,inf));
+mu = max([1e-8*hessianScale,-min(eig(hessian))+sqrt(eps)*hessianScale,eps*hessianScale]);
+expected = target-(hessian+mu*eye(6))\(initialJacobian.'*initialResidual);
+[beta,info] = MiuraPerturbCorrect(target,directions,references,gij,options);
+verifyEqual(testCase,info.exitflag,0);
+verifyEqual(testCase,beta,expected,'AbsTol',2e-13);
+[residual,jacobian] = AffineMetricResidualJacobian(beta,directions,references,gij);
+gradient = jacobian.'*residual+options.Regularization*(beta-target);
+objective = 0.5*sum(residual.^2)+0.5*options.Regularization*sum((beta-target).^2);
+verifyLessThan(testCase,objective,0.5*sum(initialResidual.^2));
+verifyGreaterThan(testCase,norm(jacobian-initialJacobian,'fro'),0.1);
+verifyEqual(testCase,info.objective,objective,'AbsTol',1e-13);
+verifyEqual(testCase,info.maxResidual,norm(residual,inf),'AbsTol',1e-13);
+verifyEqual(testCase,info.gradientInfinityNorm,norm(gradient,inf),'AbsTol',1e-13);
+end
+
+function testRejectedTrialDoesNotOverwriteAcceptedState(testCase)
+% Negative curvature produces an excessive first trial; allow only that trial.
+target = [0.1;0;0];
+directions = ones(1,1,2);
+references = zeros(1,3,2);
+options = struct('MaxInnerIterations',1);
+[beta,info] = MiuraPerturbCorrect(target,directions,references,1,options);
+[residual,jacobian] = AffineMetricResidualJacobian(target,directions,references,1);
+verifyEqual(testCase,info.exitflag,-1);
+verifyEqual(testCase,info.iterations,1);
+verifyEqual(testCase,beta,target);
+verifyEqual(testCase,info.maxResidual,norm(residual,inf),'AbsTol',1e-14);
+verifyEqual(testCase,info.objective,0.5*sum(residual.^2),'AbsTol',1e-14);
+verifyEqual(testCase,info.gradientInfinityNorm,norm(jacobian.'*residual,inf),'AbsTol',1e-14);
+end

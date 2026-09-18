@@ -2,26 +2,16 @@ function [residual,jacobian,residualCurvature] = EvaluateLowRankConstraints( ...
     beta,directionU,directionV,referenceU,referenceV,gij)
 % Evaluate prevalidated quadratic factors, as in RigidOrigamiSimulator's LM.
 
-r = size(directionU,2);
-betaByCoordinate = reshape(beta,r,3);
-
-% Preserve the original product order while reusing the fixed factor rows.
-projectedU = directionU*betaByCoordinate;
-projectedV = directionV*betaByCoordinate;
-residual = sum(projectedU.*projectedV ...
-    +referenceU.*projectedV+referenceV.*projectedU,2)-gij;
+[residual,projectedU,projectedV] = EvaluateLowRankResidual( ...
+    beta,directionU,directionV,referenceU,referenceV,gij);
 
 if nargout > 1
-    % Each quadratic constraint has a Jacobian linear in the displacement.
-    coefficientU = projectedV+referenceV;
-    coefficientV = projectedU+referenceU;
-    jacobian = [ ...
-        coefficientU(:,1).*directionU+coefficientV(:,1).*directionV, ...
-        coefficientU(:,2).*directionU+coefficientV(:,2).*directionV, ...
-        coefficientU(:,3).*directionU+coefficientV(:,3).*directionV];
+    jacobian = EvaluateLowRankJacobian( ...
+        projectedU,projectedV,directionU,directionV,referenceU,referenceV);
 end
 
 if nargout > 2
+    r = size(directionU,2);
     % Reuse the same reduced curvature block for the three coordinates.
     coordinateCurvature = directionU.'*(residual.*directionV) ...
         +directionV.'*(residual.*directionU);
