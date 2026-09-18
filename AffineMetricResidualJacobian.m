@@ -19,36 +19,19 @@ if any(~isfinite(beta)) || any(~isfinite(constraintDirections(:))) || ...
         'All metric-constraint inputs must be finite.');
 end
 
+% Keep validation at the public boundary; LM caches these fixed factors once.
 directionU = constraintDirections(:,:,1);
 directionV = constraintDirections(:,:,2);
 referenceU = referenceComponents(:,:,1);
 referenceV = referenceComponents(:,:,2);
-betaByCoordinate = reshape(beta,r,3);
-projectedU = directionU*betaByCoordinate;
-projectedV = directionV*betaByCoordinate;
-
-% Evaluate (a_u+du)'*(a_v+dv)-delta without assembling a large Hessian.
-residual = sum(projectedU.*projectedV ...
-    +referenceU.*projectedV+referenceV.*projectedU,2)-gij(:);
-
-if nargout > 1
-    % The Jacobian is linear in beta for every fixed quadratic constraint.
-    coefficientU = projectedV+referenceV;
-    coefficientV = projectedU+referenceU;
-    jacobian = [ ...
-        coefficientU(:,1).*directionU+coefficientV(:,1).*directionV, ...
-        coefficientU(:,2).*directionU+coefficientV(:,2).*directionV, ...
-        coefficientU(:,3).*directionU+coefficientV(:,3).*directionV];
-end
-
 if nargout > 2
-    % Sum residual_k*Hessian(residual_k) for the exact Newton Hessian.
-    coordinateCurvature = directionU.'*(residual.*directionV) ...
-        +directionV.'*(residual.*directionU);
-    residualCurvature = zeros(3*r,3*r);
-    for coordinate = 1:3
-        indices = (coordinate-1)*r+(1:r);
-        residualCurvature(indices,indices) = coordinateCurvature;
-    end
+    [residual,jacobian,residualCurvature] = EvaluateLowRankConstraints( ...
+        beta,directionU,directionV,referenceU,referenceV,gij(:));
+elseif nargout > 1
+    [residual,jacobian] = EvaluateLowRankConstraints( ...
+        beta,directionU,directionV,referenceU,referenceV,gij(:));
+else
+    residual = EvaluateLowRankConstraints( ...
+        beta,directionU,directionV,referenceU,referenceV,gij(:));
 end
 end

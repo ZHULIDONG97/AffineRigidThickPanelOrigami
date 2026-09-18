@@ -30,8 +30,16 @@ end
 
 targetMasterDisplacement = targetMasterDisplacement(:);
 masterDisplacement = targetMasterDisplacement;
+% Validate once and cache fixed factors outside the iterative hot path.
+[residual,jacobian,residualCurvature] = AffineMetricResidualJacobian( ...
+    masterDisplacement,constraintDirections,referenceComponents,gij);
+directionU = constraintDirections(:,:,1);
+directionV = constraintDirections(:,:,2);
+referenceU = referenceComponents(:,:,1);
+referenceV = referenceComponents(:,:,2);
+gij = gij(:);
 nMasterDof = numel(masterDisplacement);
-identityMasterDof = eye(nMasterDof);
+diagonalIndices = 1:nMasterDof+1:nMasterDof^2;
 mu = [];
 exitflag = 0;
 iterations = 0;
@@ -40,15 +48,16 @@ for iteration = 1:maxIterations
     iterations = iteration;
 
     % Use exact first and second derivatives of the quadratic constraints.
-    [residual,jacobian,residualCurvature] = ...
-        AffineMetricResidualJacobian(masterDisplacement, ...
-        constraintDirections,referenceComponents,gij);
+    if iteration > 1
+        [residual,jacobian,residualCurvature] = EvaluateLowRankConstraints( ...
+            masterDisplacement,directionU,directionV,referenceU,referenceV,gij);
+    end
     targetDifference = masterDisplacement-targetMasterDisplacement;
     objective = 0.5*(residual.'*residual) ...
         +0.5*regularization*(targetDifference.'*targetDifference);
     gradient = jacobian.'*residual+regularization*targetDifference;
-    hessian = jacobian.'*jacobian+residualCurvature ...
-        +regularization*identityMasterDof;
+    hessian = jacobian.'*jacobian+residualCurvature;
+    hessian(diagonalIndices) = hessian(diagonalIndices)+regularization;
     hessian = 0.5*(hessian+hessian.');
 
     if any(~isfinite([objective;gradient;hessian(:)]))
@@ -72,23 +81,25 @@ for iteration = 1:maxIterations
     end
 
     accepted = false;
+    displacementScale = max(1,norm(masterDisplacement));
     for innerIteration = 1:maxInnerIterations
         % Cholesky both detects and solves a positive-definite damped system.
-        [R,notPositiveDefinite] = chol(hessian+mu*identityMasterDof);
+        dampedHessian = hessian;
+        dampedHessian(diagonalIndices) = dampedHessian(diagonalIndices)+mu;
+        [R,notPositiveDefinite] = chol(dampedHessian);
         if notPositiveDefinite ~= 0
             mu = min(2*mu,muMaximum);
             continue
         end
         step = -R\(R.'\gradient);
-        if norm(step) <= stepTolerance*max(1,norm(masterDisplacement))
+        if norm(step) <= stepTolerance*displacementScale
             exitflag = 3;
             break
         end
 
         trialMasterDisplacement = masterDisplacement+step;
-        residualTrial = AffineMetricResidualJacobian( ...
-            trialMasterDisplacement,constraintDirections, ...
-            referenceComponents,gij);
+        residualTrial = EvaluateLowRankConstraints( ...
+            trialMasterDisplacement,directionU,directionV,referenceU,referenceV,gij);
         trialTargetDifference = trialMasterDisplacement ...
             -targetMasterDisplacement;
         objectiveTrial = 0.5*(residualTrial.'*residualTrial) ...
@@ -122,8 +133,8 @@ for iteration = 1:maxIterations
 end
 
 % Report objective stationarity and feasibility as separate diagnostics.
-[finalResidual,finalJacobian] = AffineMetricResidualJacobian( ...
-    masterDisplacement,constraintDirections,referenceComponents,gij);
+[finalResidual,finalJacobian] = EvaluateLowRankConstraints( ...
+    masterDisplacement,directionU,directionV,referenceU,referenceV,gij);
 finalTargetDifference = masterDisplacement-targetMasterDisplacement;
 finalGradient = finalJacobian.'*finalResidual ...
     +regularization*finalTargetDifference;
