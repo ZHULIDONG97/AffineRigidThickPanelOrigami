@@ -9,19 +9,24 @@ function [masterDisplacement,info] = MiuraPerturbCorrect( ...
 % using the analytic Jacobian, exact residual curvature, and adaptive
 % Levenberg-Marquardt damping. No chirality or intersection constraints are
 % evaluated in this first kinematic version.
+% Stopping matches RigidOrigamiSimulator: scaled RMS residual <= 1e-8,
+% scaled gradient 2-norm <= 1e-6, or relative step <= 1e-6 (exitflags 1/2/3).
+% ResidualTolerance, GradientTolerance and StepTolerance override these
+% defaults. ConstraintTolerance independently tests the raw maximum residual.
 
 if isempty(options)
     options = struct();
 end
 regularization = optionValue(options,'Regularization',1e-6);
 constraintTolerance = optionValue(options,'ConstraintTolerance',1e-6);
-stepTolerance = optionValue(options,'StepTolerance',1e-11);
-gradientTolerance = optionValue(options,'GradientTolerance',1e-10);
+residualTolerance = optionValue(options,'ResidualTolerance',1e-8);
+stepTolerance = optionValue(options,'StepTolerance',1e-6);
+gradientTolerance = optionValue(options,'GradientTolerance',1e-6);
 maxIterations = optionValue(options,'MaxIterations',80);
 maxInnerIterations = optionValue(options,'MaxInnerIterations',25);
 verbose = optionValue(options,'Verbose',false);
 
-if regularization <= 0 || constraintTolerance <= 0 || ...
+if regularization <= 0 || constraintTolerance <= 0 || residualTolerance <= 0 || ...
         stepTolerance <= 0 || gradientTolerance <= 0 || ...
         maxIterations < 1 || maxInnerIterations < 1
     error('MiuraPerturbCorrect:InvalidOptions', ...
@@ -38,11 +43,16 @@ directionV = constraintDirections(:,:,2);
 referenceU = referenceComponents(:,:,1);
 referenceV = referenceComponents(:,:,2);
 gij = gij(:);
+% Match the geometric scaling and stopping measures in RigidOrigamiSimulator.
+nConstraints = numel(gij);
+referenceMagnitude = sqrt(sum(referenceU.^2,2).*sum(referenceV.^2,2));
+constraintScale = max([1;referenceMagnitude;abs(gij)]);
 nMasterDof = numel(masterDisplacement);
 diagonalIndices = 1:nMasterDof+1:nMasterDof^2;
 mu = [];
 exitflag = 0;
 iterations = 0;
+relativeStep = inf;
 
 for iteration = 1:maxIterations
     iterations = iteration;
@@ -65,8 +75,14 @@ for iteration = 1:maxIterations
         break
     end
 
-    if norm(gradient,inf) <= gradientTolerance
+    constraintMeasure = norm(residual)/(sqrt(nConstraints)*constraintScale);
+    gradientMeasure = norm(gradient)/max(1,sqrt(2*objective));
+    if constraintMeasure <= residualTolerance
         exitflag = 1;
+        break
+    end
+    if gradientMeasure <= gradientTolerance
+        exitflag = 2;
         break
     end
 
@@ -92,7 +108,8 @@ for iteration = 1:maxIterations
             continue
         end
         step = -R\(R.'\gradient);
-        if norm(step) <= stepTolerance*displacementScale
+        relativeStep = norm(step)/displacementScale;
+        if relativeStep <= stepTolerance
             exitflag = 3;
             break
         end
@@ -140,10 +157,10 @@ finalGradient = finalJacobian.'*finalResidual ...
     +regularization*finalTargetDifference;
 maxResidual = norm(finalResidual,inf);
 gradientInfinityNorm = norm(finalGradient,inf);
-if exitflag == 0 && gradientInfinityNorm <= gradientTolerance
-    exitflag = 1;
-elseif exitflag == 3
-    exitflag = 2;
+finalObjective = 0.5*(finalResidual.'*finalResidual) ...
+    +0.5*regularization*(finalTargetDifference.'*finalTargetDifference);
+if isempty(mu)
+    mu = 0;
 end
 
 info = struct();
@@ -152,6 +169,11 @@ info.iterations = iterations;
 info.finalDamping = mu;
 info.maxResidual = maxResidual;
 info.gradientInfinityNorm = gradientInfinityNorm;
+info.constraintMeasure = norm(finalResidual)/(sqrt(nConstraints)*constraintScale);
+info.gradientMeasure = norm(finalGradient)/max(1,sqrt(2*finalObjective));
+info.relativeStep = relativeStep;
+info.objective = finalObjective;
+% Solver termination and the caller's absolute feasibility test are independent.
 info.constraintSatisfied = maxResidual <= constraintTolerance;
 if verbose
     fprintf(['Perturb-correct: exit %d, iterations %d, ' ...
