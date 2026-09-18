@@ -26,9 +26,6 @@ if ~isscalar(dragAngleStep) || ~isfinite(dragAngleStep) || dragAngleStep <= 0 ||
 end
 
 %% Zero-displacement model
-% Time model setup and numerical simulation separately from animation.
-simulationCpuStart = cputime;
-simulationTimer = tic;
 model = load(modelFile,'x0','y0','z0','B','T', ...
     'mainPointIndices','fix','panels');
 x0 = model.x0(:);
@@ -121,8 +118,9 @@ rejectedRotationEdge = [NaN NaN];
 solverOptions = struct('Regularization',regularization, ...
     'ConstraintTolerance',1e-8,'MaxIterations',150);
 
-% Each attempted drag step makes exactly one LM call, including rejected trials.
+% Sum only the Newton/LM iteration times, including rejected drag trials.
 stepWallTime = zeros(historyCapacity,1);
+stepCpuTime = zeros(historyCapacity,1);
 totalLmCalls = 0;
 totalLmIterations = 0;
 failedCorrections = 0;
@@ -131,10 +129,6 @@ perturbationBisections = 0;
 perturbationFraction = 1;
 perturbationScale = 1;
 constraintToleranceExceedances = 0;
-setupTime = toc(simulationTimer);
-setupCpuTime = cputime-simulationCpuStart;
-solveCpuStart = cputime;
-solveTimer = tic;
 while ~angleLimitReached
     stepIndex = attemptedSteps+1;
     if stepIndex > historyCapacity
@@ -143,8 +137,8 @@ while ~angleLimitReached
         yHistory(:,historyCapacity+1) = 0;
         zHistory(:,historyCapacity+1) = 0;
         stepWallTime(historyCapacity,1) = 0;
+        stepCpuTime(historyCapacity,1) = 0;
     end
-    stepTimer = tic;
     faceCoordinates = coordinates(normalFaceNodes,:);
     panelNormal = cross( ...
         faceCoordinates(2,:)-faceCoordinates(1,:), ...
@@ -221,6 +215,8 @@ while ~angleLimitReached
     attemptedSteps = stepIndex;
     totalLmCalls = totalLmCalls+1;
     totalLmIterations = totalLmIterations+solverInfo.iterations;
+    stepWallTime(stepIndex) = solverInfo.newtonWallTime;
+    stepCpuTime(stepIndex) = solverInfo.newtonCpuTime;
 
     % Match the reference workflow: stop on LM failure, without another solve.
     if solverInfo.exitflag <= 0 || ...
@@ -229,7 +225,6 @@ while ~angleLimitReached
         fprintf(['Step %d stopped after one LM call: exitflag=%d, ' ...
             'max|c|=%.3e. The previous state was retained.\n'], ...
             stepIndex,solverInfo.exitflag,solverInfo.maxResidual);
-        stepWallTime(stepIndex) = toc(stepTimer);
         break
     end
 
@@ -245,7 +240,6 @@ while ~angleLimitReached
     if any(~isfinite(trialCoordinates(:))) || any(~isfinite(trialRotationAngles))
         failedCorrections = failedCorrections+1;
         fprintf('Step %d stopped: corrected geometry is nonfinite; the previous state was retained.\n',stepIndex);
-        stepWallTime(stepIndex) = toc(stepTimer);
         break
     end
     [trialMaximumRotationAngle,rotationIndex] = max(abs(trialRotationAngles));
@@ -259,7 +253,6 @@ while ~angleLimitReached
             'the %.6f deg limit. Halving the next coordinate perturbation.\n'], ...
             stepIndex,rejectedRotationEdge(1),rejectedRotationEdge(2), ...
             rad2deg(rejectedRotationAngle),rad2deg(maximumRotationAngle));
-        stepWallTime(stepIndex) = toc(stepTimer);
         perturbationScale = 0.5*perturbationFraction;
         continue
     end
@@ -269,7 +262,6 @@ while ~angleLimitReached
     if ~angleLimitReached && isequal(trialMasterDisplacement,masterDisplacement)
         failedCorrections = failedCorrections+1;
         fprintf('Step %d stopped: LM returned an unchanged state before the angle target.\n',stepIndex);
-        stepWallTime(stepIndex) = toc(stepTimer);
         break
     end
 
@@ -292,13 +284,11 @@ while ~angleLimitReached
         stepIndex,perturbationFraction, ...
         solverInfo.iterations,solverInfo.maxResidual, ...
         rad2deg(trialMaximumRotationAngle));
-    stepWallTime(stepIndex) = toc(stepTimer);
 end
-solveTime = toc(solveTimer);
-solveCpuTime = cputime-solveCpuStart;
-simulationTime = toc(simulationTimer);
-simulationCpuTime = cputime-simulationCpuStart;
 stepWallTime = stepWallTime(1:attemptedSteps);
+stepCpuTime = stepCpuTime(1:attemptedSteps);
+solveTime = sum(stepWallTime);
+solveCpuTime = sum(stepCpuTime);
 averageStepWallTime = NaN;
 averageStepCpuTime = NaN;
 if attemptedSteps > 0
@@ -312,7 +302,7 @@ zHistory = zHistory(:,1:completedSteps+1);
 x_fs = xHistory(:,end);
 y_fs = yHistory(:,end);
 z_fs = zHistory(:,end);
-fprintf(['Finished %d accepted / %d attempted steps in %.3f s; ' ...
+fprintf(['Finished %d accepted / %d attempted steps with %.6f s Newton iteration time; ' ...
     'max|c| %.3e, max accepted angle %.6f deg.\n'], ...
     completedSteps,attemptedSteps,solveTime, ...
     maximumResidual,rad2deg(maximumAcceptedRotationAngle));
@@ -323,17 +313,16 @@ else
     fprintf('The angle target was not reached; the last accepted state is retained.\n');
 end
 
-% CPU time sums MATLAB process/thread work; wall time is elapsed time.
-fprintf(['Timing (animation excluded): setup %.6f s wall / %.6f s CPU; ' ...
-    'simulation total %.6f s wall / %.6f s CPU.\n'], ...
-    setupTime,setupCpuTime,simulationTime,simulationCpuTime);
-fprintf('Solve loop: %.6f s wall / %.6f s CPU.\n',solveTime,solveCpuTime);
+% CPU time sums process/thread work; wall time is elapsed Newton iteration time.
+fprintf('Newton iterations only: %.6f s wall / %.6f s CPU.\n',solveTime,solveCpuTime);
 if attemptedSteps > 0
-    fprintf(['Mean per attempted drag step: %.3f ms wall / %.3f ms CPU; ' ...
+    fprintf(['Mean Newton time per LM call: %.3f ms wall / %.3f ms CPU; ' ...
         'wall median %.3f ms, range %.3f-%.3f ms.\n'], ...
         1000*averageStepWallTime,1000*averageStepCpuTime, ...
         1000*median(stepWallTime),1000*min(stepWallTime),1000*max(stepWallTime));
     fprintf('Mean LM outer iterations per call: %.2f.\n',totalLmIterations/totalLmCalls);
+    fprintf('Mean time per LM outer iteration: %.3f ms wall / %.3f ms CPU.\n', ...
+        1000*solveTime/totalLmIterations,1000*solveCpuTime/totalLmIterations);
 end
 fprintf(['Solver work: %d LM calls; %d LM outer iterations; %d failed corrections; ' ...
     '%d rejected angle-limit trials; %d perturbation-coordinate bisections.\n'], ...

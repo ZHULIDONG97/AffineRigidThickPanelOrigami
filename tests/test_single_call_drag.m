@@ -228,7 +228,16 @@ end
 
 function verifyTiming(testCase,state)
 verifyEqual(testCase,numel(state.stepWallTime),state.attemptedSteps);
+verifyEqual(testCase,numel(state.stepCpuTime),state.attemptedSteps);
 verifyTrue(testCase,all(isfinite(state.stepWallTime)));
+verifyTrue(testCase,all(isfinite(state.stepCpuTime)));
+verifyEqual(testCase,state.solveTime,sum(state.stepWallTime));
+verifyEqual(testCase,state.solveCpuTime,sum(state.stepCpuTime));
+% Mock solver durations exclude all drag-loop work and count rejected calls too.
+if isfield(state,'targets')
+    verifyEqual(testCase,state.stepWallTime,0.002*ones(state.attemptedSteps,1));
+    verifyEqual(testCase,state.stepCpuTime,0.003*ones(state.attemptedSteps,1));
+end
 if state.attemptedSteps == 0
     verifyTrue(testCase,isnan(state.averageStepWallTime));
     return
@@ -237,6 +246,8 @@ verifyTrue(testCase,isfinite(state.averageStepWallTime));
 verifyGreaterThanOrEqual(testCase,state.averageStepWallTime,0);
 verifyEqual(testCase,state.averageStepWallTime, ...
     state.solveTime/state.attemptedSteps,'AbsTol',eps);
+verifyEqual(testCase,state.averageStepCpuTime, ...
+    state.solveCpuTime/state.attemptedSteps,'AbsTol',eps);
 end
 
 function state = runIsolatedDemo(mode,nSteps)
@@ -262,10 +273,10 @@ scriptText = scriptText(1:animationStart-1);
 scriptText = regexprep(scriptText,'(?m)^(clear|clc|close all);[^\r\n]*(\r?\n|$)','');
 if ~strcmp(mode,'terminal') && ~strcmp(mode,'initial-terminal')
     % Bound only the isolated unit-test scenario, never the production loop.
-    timerMarker = '    stepTimer = tic;';
-    assert(isscalar(strfind(scriptText,timerMarker)),'The step timer was not found.');
-    scriptText = strrep(scriptText,timerMarker, ...
-        [sprintf('    if attemptedSteps >= %d, break; end\n',nSteps),timerMarker]);
+    stepMarker = '    stepIndex = attemptedSteps+1;';
+    assert(isscalar(strfind(scriptText,stepMarker)),'The step boundary was not found.');
+    scriptText = strrep(scriptText,stepMarker, ...
+        [sprintf('    if attemptedSteps >= %d, break; end\n',nSteps),stepMarker]);
 end
 if strcmp(mode,'held-state')
     stagnationGuard = 'if ~angleLimitReached && isequal(trialMasterDisplacement,masterDisplacement)';
@@ -299,7 +310,7 @@ else
         'assert(size(targets,2)<=%d,''Unexpected repeated LM call.'');\n' ...
         'beta=target;\n' ...
         'info=struct(''exitflag'',%d,''iterations'',3,''maxResidual'',2e-8, ...\n' ...
-        '    ''constraintSatisfied'',false);\n' ...
+        '    ''constraintSatisfied'',false,''newtonWallTime'',0.002,''newtonCpuTime'',0.003);\n' ...
         'end\n'],expectedCalls,exitFlag);
     if strcmp(mode,'held-state') || strcmp(mode,'stagnation')
         mockSolver = strrep(mockSolver,'beta=target;','beta=zeros(size(target));');
@@ -369,6 +380,7 @@ state = struct('attemptedSteps',attemptedSteps,'completedSteps',completedSteps, 
     'perturbationFraction',perturbationFraction, ...
     'maximumAcceptedRotationAngle',maximumAcceptedRotationAngle, ...
     'stepWallTime',stepWallTime,'averageStepWallTime',averageStepWallTime, ...
+    'stepCpuTime',stepCpuTime,'averageStepCpuTime',averageStepCpuTime,'solveCpuTime',solveCpuTime, ...
     'solveTime',solveTime,'xHistory',xHistory,'yHistory',yHistory,'zHistory',zHistory, ...
     'initialCoordinates',[x0,y0,z0],'dragDofIndices',dragDofIndices, ...
     'dragNode',dragNode,'dragRotationEdge',dragRotationEdge,'dragAngleStep',dragAngleStep, ...

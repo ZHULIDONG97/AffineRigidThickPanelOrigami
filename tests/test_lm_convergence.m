@@ -196,7 +196,9 @@ for variant = 1:4
     clear MiuraPerturbCorrect
     [freshBeta,freshInfo] = MiuraPerturbCorrect(target,directions,references,-[1;2],options);
     verifyEqual(testCase,cachedBeta,freshBeta);
-    verifyEqual(testCase,cachedInfo,freshInfo);
+    timeFields = {'newtonWallTime','newtonCpuTime'};
+    verifyEqual(testCase,rmfield(cachedInfo,timeFields),rmfield(freshInfo,timeFields));
+    verifyGreaterThanOrEqual(testCase,[cachedInfo.newtonWallTime,cachedInfo.newtonCpuTime],0);
 end
 end
 

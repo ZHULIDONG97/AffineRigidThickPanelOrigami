@@ -33,6 +33,11 @@ Constant constraint Hessians are cached as columns of a sparse matrix, so their
 residual-weighted sum uses one matrix-vector product. Coefficients at or below
 `1e-12` times the largest Hessian coefficient are treated as zero; changing the
 constraint directions rebuilds the cache. The final LM system uses dense Cholesky.
+Reported wall and CPU times sum only the Newton/LM iteration loops, including
+damping trials. Model setup, the initial residual/Jacobian evaluation, building
+the curvature cache, drag prediction, final diagnostics, and animation are excluded.
+For steady-state timing, warm up the demo in the same MATLAB session before
+the measured run; keep the function cache loaded.
 
 Each step generates node 18's target coordinates by rotating its **current
 corrected position by 1 degree** around hinge 17–24. The difference between the

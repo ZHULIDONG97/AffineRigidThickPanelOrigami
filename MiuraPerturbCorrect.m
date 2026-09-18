@@ -78,6 +78,9 @@ exitflag = 0;
 iterations = 0;
 relativeStep = inf;
 
+% Time only Newton/LM iterations, after input checks and fixed-factor setup.
+newtonCpuStart = cputime;
+newtonTimer = tic;
 for iteration = 1:maxIterations
     iterations = iteration;
 
@@ -178,6 +181,8 @@ for iteration = 1:maxIterations
         break
     end
 end
+newtonWallTime = toc(newtonTimer);
+newtonCpuTime = cputime-newtonCpuStart;
 
 % Reuse current-state derivatives, including the last accepted iteration-limit step.
 finalTargetDifference = masterDisplacement-targetMasterDisplacement;
@@ -194,6 +199,8 @@ end
 info = struct();
 info.exitflag = exitflag;
 info.iterations = iterations;
+info.newtonWallTime = newtonWallTime;
+info.newtonCpuTime = newtonCpuTime;
 info.finalDamping = mu;
 info.maxResidual = maxResidual;
 info.gradientInfinityNorm = gradientInfinityNorm;
