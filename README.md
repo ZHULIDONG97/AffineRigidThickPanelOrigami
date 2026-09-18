@@ -22,14 +22,22 @@ Open this repository in MATLAB and run:
 demo_miura_drag
 ```
 
-Adjust the drag node, step length, step count, regularization, and angle limit
-in the settings section of `demo_miura_drag.m`.
+Adjust the drag node, hinge axis, angular increment, step count, regularization,
+and angle limit in the settings section of `demo_miura_drag.m`.
 
 LM uses the same stopping criteria as RigidOrigamiSimulator: scaled RMS
 residual `1e-8`, scaled gradient `1e-6`, or relative step `1e-6`.
-The drag demo separately checks the maximum selected metric-constraint residual
-against `1e-8`.
-Changing solver tolerances can change the drag trajectory and step count.
+Each step generates node 18's target coordinates by rotating its **current
+corrected position by 1 degree** around hinge 17–24. The difference between the
+target and current coordinates is the drag perturbation. The corrected motion
+need not be exactly 1 degree.
+
+An angle-limited search bisects this Cartesian perturbation if needed, then
+calls LM once. No LM call is made if no admissible positive perturbation is found.
+Positive LM exits are accepted; the maximum residual is reported without an additional
+`1e-8` acceptance requirement. An LM failure or a corrected trial crossing the
+hinge-angle limit stops at the previous accepted state. The final angle may
+remain below the limit because corrected states are not bisected or interpolated.
 
 ## Reference data
 

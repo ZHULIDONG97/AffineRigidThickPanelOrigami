@@ -1,4 +1,4 @@
-% Drag node 18 along the current panel normal and correct each step by LM.
+% Generate a relative 1-degree target for node 18, then correct its perturbation once by LM.
 clear;
 clc;
 close all;
@@ -8,17 +8,19 @@ modelFile = fullfile(codeDir,'four_panel_reference.mat');
 
 %% Settings
 dragNode = 18;
-dragStepLength = 0.05;
-nDragSteps = 130;
+dragRotationEdge = [17 24];
+dragAngleStep = deg2rad(1);
+nDragSteps = 50;
 regularization = 1e-7;
 maximumRotationAngle = deg2rad(180);
 constraintRankTolerance = 1e-10;
 
-if dragStepLength <= 0 || nDragSteps < 1 || ...
+if ~isscalar(dragAngleStep) || ~isfinite(dragAngleStep) || dragAngleStep <= 0 || ...
+        nDragSteps < 1 || ...
         nDragSteps ~= round(nDragSteps) || regularization <= 0 || ...
         maximumRotationAngle <= 0 || ~isfinite(maximumRotationAngle)
     error('demo_miura_drag:InvalidDrag', ...
-        ['Step length, step count, and regularization must be positive; ' ...
+        ['Angular increment, step count, and regularization must be positive; ' ...
          'the rotation-angle limit must be finite and positive.']);
 end
 
@@ -74,10 +76,16 @@ rotationNodeIndices = [16 17 24 18; ...
 rotationEdges = rotationNodeIndices(:,2:3);
 rotationAngleTolerance = deg2rad(1e-8);
 angleBoundaryTolerance = deg2rad(0.1);
-maximumAngleBisections = 30;
+maximumPerturbationBisections = 30;
 
 %% Perturbation correction
 nNodes = numel(x0);
+if numel(dragRotationEdge) ~= 2 || numel(unique(dragRotationEdge)) ~= 2 || ...
+        any(dragRotationEdge < 1 | dragRotationEdge > nNodes ...
+        | dragRotationEdge ~= round(dragRotationEdge)) || ismember(dragNode,dragRotationEdge)
+    error('demo_miura_drag:InvalidDragAxis', ...
+        'The drag rotation axis needs two distinct valid nodes excluding the dragged node.');
+end
 if any(rotationNodeIndices(:) < 1 | rotationNodeIndices(:) > nNodes)
     error('demo_miura_drag:InvalidRotationNodes', ...
         'A rotation-angle constraint contains an invalid node index.');
@@ -103,229 +111,180 @@ previousPanelNormal = [];
 maximumResidual = 0;
 maximumAcceptedRotationAngle = max(abs(rotationAngles));
 angleLimitReached = false;
+attemptedSteps = 0;
 completedSteps = 0;
 rejectedRotationAngle = NaN;
 rejectedRotationEdge = [NaN NaN];
-boundaryRotationAngle = NaN;
-boundaryStepLength = NaN;
 solverOptions = struct('Regularization',regularization, ...
     'ConstraintTolerance',1e-8,'MaxIterations',150);
-correctionStepLength = dragStepLength;
-minimumCorrectionStepLength = dragStepLength/2^20;
 
-% Count all solver work, including failed trials and angle-boundary searches.
+% Each attempted drag step makes exactly one LM call, including a rejected last step.
 stepWallTime = zeros(nDragSteps,1);
 totalLmCalls = 0;
 totalLmIterations = 0;
-totalAcceptedSubsteps = 0;
 failedCorrections = 0;
 angleLimitTrials = 0;
-angleBisections = 0;
+perturbationBisections = 0;
+perturbationFraction = 1;
+constraintToleranceExceedances = 0;
 setupTime = toc(simulationTimer);
 setupCpuTime = cputime-simulationCpuStart;
 solveCpuStart = cputime;
 solveTimer = tic;
 for stepIndex = 1:nDragSteps
     stepTimer = tic;
-    remainingStepLength = dragStepLength;
-    substepCount = 0;
-    stepMaximumResidual = 0;
-    stepMaximumRotationAngle = 0;
-    while remainingStepLength > 10*eps(dragStepLength)
-        trialStepLength = min(correctionStepLength,remainingStepLength);
-        faceCoordinates = coordinates(normalFaceNodes,:);
-        panelNormal = cross( ...
-            faceCoordinates(2,:)-faceCoordinates(1,:), ...
-            faceCoordinates(3,:)-faceCoordinates(1,:));
-        panelNormal = panelNormal/norm(panelNormal);
-        if ~isempty(previousPanelNormal) && ...
-                dot(panelNormal,previousPanelNormal) < 0
-            panelNormal = -panelNormal;
-        end
-        targetMasterDisplacement = masterDisplacement;
-        targetMasterDisplacement(dragDofIndices) = ...
-            targetMasterDisplacement(dragDofIndices) ...
-            +trialStepLength*panelNormal(:);
-        [trialMasterDisplacement,solverInfo] = MiuraPerturbCorrect( ...
-            targetMasterDisplacement,rigidityDirections, ...
-            rigidityReferences,rigidityOffsets,solverOptions);
-        totalLmCalls = totalLmCalls+1;
-        totalLmIterations = totalLmIterations+solverInfo.iterations;
-
-        if solverInfo.exitflag > 0 && solverInfo.constraintSatisfied
-            trialCoordinates = [x0,y0,z0] ...
-                +mappedB*reshape( ...
-                trialMasterDisplacement,nFreeMasters,3);
-            principalRotationAngles = RotationAngle( ...
-                size(rotationNodeIndices,1),rotationNodeIndices, ...
-                trialCoordinates(:,1),trialCoordinates(:,2), ...
-                trialCoordinates(:,3));
-            rotationAngleIncrement = atan2( ...
-                sin(principalRotationAngles-rotationAngles), ...
-                cos(principalRotationAngles-rotationAngles));
-            trialRotationAngles = rotationAngles+rotationAngleIncrement;
-            [trialMaximumRotationAngle,rotationIndex] = max( ...
-                abs(trialRotationAngles));
-            if trialMaximumRotationAngle > ...
-                    maximumRotationAngle+rotationAngleTolerance
-                rejectedRotationAngle = trialMaximumRotationAngle;
-                angleLimitTrials = angleLimitTrials+1;
-
-                % Bisect the perturbation and rerun LM to reach the angle boundary.
-                angleBaseMasterDisplacement = masterDisplacement;
-                angleBaseRotationAngles = rotationAngles;
-                lowerStepLength = 0;
-                upperStepLength = trialStepLength;
-                boundaryMasterDisplacement = masterDisplacement;
-                boundaryCoordinates = coordinates;
-                boundaryRotationAngles = rotationAngles;
-                boundaryMaximumRotationAngle = max(abs(rotationAngles));
-                boundaryRotationIndex = rotationIndex;
-                boundaryResidual = 0;
-                for angleBisectionIndex = 1:maximumAngleBisections
-                    candidateStepLength = 0.5*( ...
-                        lowerStepLength+upperStepLength);
-                    candidateTargetMasterDisplacement = ...
-                        angleBaseMasterDisplacement;
-                    candidateTargetMasterDisplacement(dragDofIndices) = ...
-                        candidateTargetMasterDisplacement(dragDofIndices) ...
-                        +candidateStepLength*panelNormal(:);
-                    [candidateMasterDisplacement,candidateSolverInfo] = ...
-                        MiuraPerturbCorrect( ...
-                        candidateTargetMasterDisplacement, ...
-                        rigidityDirections,rigidityReferences, ...
-                        rigidityOffsets,solverOptions);
-                    totalLmCalls = totalLmCalls+1;
-                    totalLmIterations = totalLmIterations ...
-                        +candidateSolverInfo.iterations;
-                    angleBisections = angleBisections+1;
-                    if candidateSolverInfo.exitflag <= 0 || ...
-                            ~candidateSolverInfo.constraintSatisfied
-                        error('demo_miura_drag:AngleBoundaryCorrectionFailed', ...
-                            ['LM failed while locating the angle boundary ' ...
-                             'at step %d.'],stepIndex);
-                    end
-
-                    candidateCoordinates = [x0,y0,z0] ...
-                        +mappedB*reshape( ...
-                        candidateMasterDisplacement,nFreeMasters,3);
-                    candidatePrincipalAngles = RotationAngle( ...
-                        size(rotationNodeIndices,1), ...
-                        rotationNodeIndices,candidateCoordinates(:,1), ...
-                        candidateCoordinates(:,2), ...
-                        candidateCoordinates(:,3));
-                    candidateAngleIncrement = atan2( ...
-                        sin(candidatePrincipalAngles ...
-                        -angleBaseRotationAngles), ...
-                        cos(candidatePrincipalAngles ...
-                        -angleBaseRotationAngles));
-                    candidateRotationAngles = angleBaseRotationAngles ...
-                        +candidateAngleIncrement;
-                    [candidateMaximumRotationAngle, ...
-                        candidateRotationIndex] = max( ...
-                        abs(candidateRotationAngles));
-
-                    if candidateMaximumRotationAngle ...
-                            <= maximumRotationAngle
-                        lowerStepLength = candidateStepLength;
-                        boundaryMasterDisplacement = ...
-                            candidateMasterDisplacement;
-                        boundaryCoordinates = candidateCoordinates;
-                        boundaryRotationAngles = ...
-                            candidateRotationAngles;
-                        boundaryMaximumRotationAngle = ...
-                            candidateMaximumRotationAngle;
-                        boundaryRotationIndex = candidateRotationIndex;
-                        boundaryResidual = candidateSolverInfo.maxResidual;
-                        if maximumRotationAngle ...
-                                -boundaryMaximumRotationAngle ...
-                                <= angleBoundaryTolerance
-                            break
-                        end
-                    else
-                        upperStepLength = candidateStepLength;
-                    end
-                end
-
-                if maximumRotationAngle-boundaryMaximumRotationAngle ...
-                        > angleBoundaryTolerance
-                    error('demo_miura_drag:AngleBoundaryFailed', ...
-                        ['The final angle at step %d is more than 0.1 ' ...
-                         'degree below the limit.'],stepIndex);
-                end
-
-                masterDisplacement = boundaryMasterDisplacement;
-                coordinates = boundaryCoordinates;
-                previousPanelNormal = panelNormal;
-                rotationAngles = boundaryRotationAngles;
-                angleLimitReached = true;
-                boundaryRotationAngle = boundaryMaximumRotationAngle;
-                boundaryStepLength = lowerStepLength;
-                rejectedRotationEdge = ...
-                    rotationEdges(boundaryRotationIndex,:);
-                substepCount = substepCount+1;
-                stepMaximumResidual = max( ...
-                    stepMaximumResidual,boundaryResidual);
-                stepMaximumRotationAngle = max( ...
-                    stepMaximumRotationAngle,boundaryRotationAngle);
-                fprintf(['Step %d reached hinge [%d %d] limit at ' ...
-                    '%.3f deg using a partial step %.6g; ' ...
-                    'the %.3f deg trial was not accepted.\n'], ...
-                    stepIndex,rejectedRotationEdge(1), ...
-                    rejectedRotationEdge(2), ...
-                    rad2deg(boundaryRotationAngle), ...
-                    boundaryStepLength,rad2deg(rejectedRotationAngle));
-                break
-            end
-
-            masterDisplacement = trialMasterDisplacement;
-            coordinates = trialCoordinates;
-            previousPanelNormal = panelNormal;
-            rotationAngles = trialRotationAngles;
-            remainingStepLength = max(0, ...
-                remainingStepLength-trialStepLength);
-            substepCount = substepCount+1;
-            stepMaximumResidual = max( ...
-                stepMaximumResidual,solverInfo.maxResidual);
-            stepMaximumRotationAngle = max( ...
-                stepMaximumRotationAngle,trialMaximumRotationAngle);
-        else
-            failedCorrections = failedCorrections+1;
-            correctionStepLength = trialStepLength/2;
-            if correctionStepLength < minimumCorrectionStepLength
-                error('demo_miura_drag:CorrectionFailed', ...
-                    ['Step %d failed after adaptive subdivision: ' ...
-                     'exitflag=%d, max|c|=%.3e.'], ...
-                    stepIndex,solverInfo.exitflag,solverInfo.maxResidual);
-            end
-        end
+    faceCoordinates = coordinates(normalFaceNodes,:);
+    panelNormal = cross( ...
+        faceCoordinates(2,:)-faceCoordinates(1,:), ...
+        faceCoordinates(3,:)-faceCoordinates(1,:));
+    panelNormal = panelNormal/norm(panelNormal);
+    if ~isempty(previousPanelNormal) && ...
+            dot(panelNormal,previousPanelNormal) < 0
+        panelNormal = -panelNormal;
     end
 
+    % Rotate around the current hinge, choosing the old outward drag direction.
+    hingeOrigin = coordinates(dragRotationEdge(1),:);
+    hingeAxis = coordinates(dragRotationEdge(2),:)-hingeOrigin;
+    hingeAxisLength = norm(hingeAxis);
+    if ~isfinite(hingeAxisLength) || hingeAxisLength == 0
+        error('demo_miura_drag:DegenerateDragAxis','The drag hinge has zero or invalid length.');
+    end
+    hingeAxis = hingeAxis/hingeAxisLength;
+    radialPosition = coordinates(dragNode,:)-hingeOrigin;
+    if dot(cross(hingeAxis,radialPosition),panelNormal) < 0
+        hingeAxis = -hingeAxis;
+    end
+
+    % Generate a target 1 degree beyond the current corrected state, not stepIndex degrees.
+    % Convert that relative rotation into a Cartesian perturbation of the drag node.
+    targetDragCoordinates = hingeOrigin+radialPosition*cos(dragAngleStep) ...
+        +cross(hingeAxis,radialPosition)*sin(dragAngleStep) ...
+        +hingeAxis*dot(hingeAxis,radialPosition)*(1-cos(dragAngleStep));
+    dragCoordinatePerturbation = targetDragCoordinates-coordinates(dragNode,:);
+    % Bisect only the predicted coordinates. These angle checks do not call LM.
+    lowerFraction = 0;
+    upperFraction = 1;
+    perturbationFraction = 1;
+    targetMasterDisplacement = masterDisplacement;
+    for predictionIndex = 0:maximumPerturbationBisections
+        predictedMasterDisplacement = masterDisplacement;
+        predictedMasterDisplacement(dragDofIndices) = ...
+            predictedMasterDisplacement(dragDofIndices) ...
+            +perturbationFraction*dragCoordinatePerturbation.';
+        predictedCoordinates = [x0,y0,z0] ...
+            +mappedB*reshape(predictedMasterDisplacement,nFreeMasters,3);
+        predictedPrincipalAngles = RotationAngle( ...
+            size(rotationNodeIndices,1),rotationNodeIndices, ...
+            predictedCoordinates(:,1),predictedCoordinates(:,2),predictedCoordinates(:,3));
+        predictedRotationAngles = rotationAngles+atan2( ...
+            sin(predictedPrincipalAngles-rotationAngles), ...
+            cos(predictedPrincipalAngles-rotationAngles));
+        predictedMaximumAngle = max(abs(predictedRotationAngles));
+        if all(isfinite(predictedRotationAngles)) && ...
+                predictedMaximumAngle <= maximumRotationAngle+rotationAngleTolerance
+            lowerFraction = perturbationFraction;
+            targetMasterDisplacement = predictedMasterDisplacement;
+            if perturbationFraction == 1 || ...
+                    maximumRotationAngle-predictedMaximumAngle <= angleBoundaryTolerance
+                break
+            end
+        else
+            upperFraction = perturbationFraction;
+        end
+        if predictionIndex < maximumPerturbationBisections
+            perturbationFraction = 0.5*(lowerFraction+upperFraction);
+            perturbationBisections = perturbationBisections+1;
+        end
+    end
+    perturbationFraction = lowerFraction;
+    if perturbationFraction == 0
+        angleLimitReached = true;
+        fprintf(['Step %d stopped: no admissible positive perturbation ' ...
+            'was found within the angle-search limit.\n'],stepIndex);
+        break
+    end
+    [trialMasterDisplacement,solverInfo] = MiuraPerturbCorrect( ...
+        targetMasterDisplacement,rigidityDirections, ...
+        rigidityReferences,rigidityOffsets,solverOptions);
+    attemptedSteps = stepIndex;
+    totalLmCalls = totalLmCalls+1;
+    totalLmIterations = totalLmIterations+solverInfo.iterations;
+
+    % Match the reference workflow: stop on LM failure, without another solve.
+    if solverInfo.exitflag <= 0 || ...
+            any(~isfinite(trialMasterDisplacement)) || ~isfinite(solverInfo.maxResidual)
+        failedCorrections = failedCorrections+1;
+        fprintf(['Step %d stopped after one LM call: exitflag=%d, ' ...
+            'max|c|=%.3e. The previous state was retained.\n'], ...
+            stepIndex,solverInfo.exitflag,solverInfo.maxResidual);
+        stepWallTime(stepIndex) = toc(stepTimer);
+        break
+    end
+
+    trialCoordinates = [x0,y0,z0] ...
+        +mappedB*reshape(trialMasterDisplacement,nFreeMasters,3);
+    principalRotationAngles = RotationAngle( ...
+        size(rotationNodeIndices,1),rotationNodeIndices, ...
+        trialCoordinates(:,1),trialCoordinates(:,2),trialCoordinates(:,3));
+    rotationAngleIncrement = atan2( ...
+        sin(principalRotationAngles-rotationAngles), ...
+        cos(principalRotationAngles-rotationAngles));
+    trialRotationAngles = rotationAngles+rotationAngleIncrement;
+    if any(~isfinite(trialCoordinates(:))) || any(~isfinite(trialRotationAngles))
+        failedCorrections = failedCorrections+1;
+        fprintf('Step %d stopped: corrected geometry is nonfinite; the previous state was retained.\n',stepIndex);
+        stepWallTime(stepIndex) = toc(stepTimer);
+        break
+    end
+    [trialMaximumRotationAngle,rotationIndex] = max(abs(trialRotationAngles));
+
+    % LM can change the predicted angles; reject an overshoot without another solve.
+    if trialMaximumRotationAngle > maximumRotationAngle+rotationAngleTolerance
+        angleLimitReached = true;
+        angleLimitTrials = angleLimitTrials+1;
+        rejectedRotationAngle = trialMaximumRotationAngle;
+        rejectedRotationEdge = rotationEdges(rotationIndex,:);
+        fprintf(['Step %d stopped at hinge [%d %d]: trial %.6f deg exceeds ' ...
+            'the %.6f deg limit. The previous state was retained.\n'], ...
+            stepIndex,rejectedRotationEdge(1),rejectedRotationEdge(2), ...
+            rad2deg(rejectedRotationAngle),rad2deg(maximumRotationAngle));
+        stepWallTime(stepIndex) = toc(stepTimer);
+        break
+    end
+
+    % Accept positive LM termination; the raw residual remains a diagnostic.
+    masterDisplacement = trialMasterDisplacement;
+    coordinates = trialCoordinates;
+    previousPanelNormal = panelNormal;
+    rotationAngles = trialRotationAngles;
     xHistory(:,stepIndex+1) = coordinates(:,1);
     yHistory(:,stepIndex+1) = coordinates(:,2);
     zHistory(:,stepIndex+1) = coordinates(:,3);
     completedSteps = stepIndex;
-    maximumResidual = max(maximumResidual,stepMaximumResidual);
+    maximumResidual = max(maximumResidual,solverInfo.maxResidual);
     maximumAcceptedRotationAngle = max( ...
-        maximumAcceptedRotationAngle,stepMaximumRotationAngle);
-    totalAcceptedSubsteps = totalAcceptedSubsteps+substepCount;
-
-    fprintf(['Step %d/%d: %d accepted substeps, correction step %.4g, ' ...
+        maximumAcceptedRotationAngle,trialMaximumRotationAngle);
+    constraintToleranceExceedances = constraintToleranceExceedances ...
+        +double(~solverInfo.constraintSatisfied);
+    fprintf(['Step %d/%d: coordinate perturbation fraction %.6g, one LM call, %d iterations, ' ...
         'max|c| %.3e, max angle %.3f deg\n'], ...
-        stepIndex,nDragSteps,substepCount,correctionStepLength, ...
-        stepMaximumResidual,rad2deg(stepMaximumRotationAngle));
+        stepIndex,nDragSteps,perturbationFraction, ...
+        solverInfo.iterations,solverInfo.maxResidual, ...
+        rad2deg(trialMaximumRotationAngle));
     stepWallTime(stepIndex) = toc(stepTimer);
-    if angleLimitReached
-        break
-    end
 end
 solveTime = toc(solveTimer);
 solveCpuTime = cputime-solveCpuStart;
 simulationTime = toc(simulationTimer);
 simulationCpuTime = cputime-simulationCpuStart;
-stepWallTime = stepWallTime(1:completedSteps);
-averageStepWallTime = solveTime/completedSteps;
-averageStepCpuTime = solveCpuTime/completedSteps;
+stepWallTime = stepWallTime(1:attemptedSteps);
+averageStepWallTime = NaN;
+averageStepCpuTime = NaN;
+if attemptedSteps > 0
+    averageStepWallTime = solveTime/attemptedSteps;
+    averageStepCpuTime = solveCpuTime/attemptedSteps;
+end
 
 xHistory = xHistory(:,1:completedSteps+1);
 yHistory = yHistory(:,1:completedSteps+1);
@@ -333,29 +292,29 @@ zHistory = zHistory(:,1:completedSteps+1);
 x_fs = xHistory(:,end);
 y_fs = yHistory(:,end);
 z_fs = zHistory(:,end);
-fprintf(['Finished %d/%d accepted steps in %.3f s; max|c| %.3e, ' ...
-    'max angle %.3f deg.\n'],completedSteps,nDragSteps,solveTime, ...
+fprintf(['Finished %d accepted / %d attempted / %d requested steps in %.3f s; ' ...
+    'max|c| %.3e, max accepted angle %.6f deg.\n'], ...
+    completedSteps,attemptedSteps,nDragSteps,solveTime, ...
     maximumResidual,rad2deg(maximumAcceptedRotationAngle));
 
 % CPU time sums MATLAB process/thread work; wall time is elapsed time.
 fprintf(['Timing (animation excluded): setup %.6f s wall / %.6f s CPU; ' ...
     'simulation total %.6f s wall / %.6f s CPU.\n'], ...
     setupTime,setupCpuTime,simulationTime,simulationCpuTime);
-fprintf('Solve loop: %.6f s wall / %.6f s CPU.\n', ...
-    solveTime,solveCpuTime);
-fprintf(['Mean per accepted drag step: %.3f ms wall / %.3f ms CPU; ' ...
-    'wall median %.3f ms, range %.3f-%.3f ms.\n'], ...
-    1000*averageStepWallTime,1000*averageStepCpuTime, ...
-    1000*median(stepWallTime),1000*min(stepWallTime),1000*max(stepWallTime));
-fprintf(['Solver work: %d accepted substeps; %d LM calls; ' ...
-    '%d LM outer iterations (%.2f per call); %d failed corrections; ' ...
-    '%d angle-limit trials; %d angle bisections.\n'], ...
-    totalAcceptedSubsteps,totalLmCalls,totalLmIterations, ...
-    totalLmIterations/totalLmCalls,failedCorrections,angleLimitTrials, ...
-    angleBisections);
-if angleLimitReached
-    fprintf('The mean includes the final partial drag step at the angle limit.\n');
+fprintf('Solve loop: %.6f s wall / %.6f s CPU.\n',solveTime,solveCpuTime);
+if attemptedSteps > 0
+    fprintf(['Mean per attempted drag step: %.3f ms wall / %.3f ms CPU; ' ...
+        'wall median %.3f ms, range %.3f-%.3f ms.\n'], ...
+        1000*averageStepWallTime,1000*averageStepCpuTime, ...
+        1000*median(stepWallTime),1000*min(stepWallTime),1000*max(stepWallTime));
+    fprintf('Mean LM outer iterations per call: %.2f.\n',totalLmIterations/totalLmCalls);
 end
+fprintf(['Solver work: %d LM calls; %d LM outer iterations; %d failed corrections; ' ...
+    '%d rejected angle-limit trials; %d perturbation-coordinate bisections.\n'], ...
+    totalLmCalls,totalLmIterations,failedCorrections,angleLimitTrials,perturbationBisections);
+fprintf(['Accepted steps with raw max|c| above %.3e: %d. ' ...
+    'Residuals are diagnostic and do not trigger retries.\n'], ...
+    solverOptions.ConstraintTolerance,constraintToleranceExceedances);
 
 %% Animation
 xLimits = [min(xHistory(:)),max(xHistory(:))];
