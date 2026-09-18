@@ -142,11 +142,11 @@ verifyFalse(testCase,isfinite(info.objective));
 verifyFalse(testCase,info.constraintSatisfied);
 end
 
-function testPackedCurvatureStepAndUpdatedDiagnostics(testCase)
+function testSparseCurvatureStepAndUpdatedDiagnostics(testCase)
 % A coupled two-master problem exercises off-diagonal curvature and a changing J.
 directions = zeros(3,2,2);
 directions(:,:,1) = [1 2;0.5 -1;1.5 0.4];
-directions(:,:,2) = directions(:,:,1);
+directions(:,:,2) = directions(:,:,1).*[1.1 0.9];
 references = zeros(3,3,2);
 gij = -[1;2;3];
 target = [0.2;-0.1;0.05;0.3;-0.15;0.1];
@@ -171,6 +171,33 @@ verifyGreaterThan(testCase,norm(jacobian-initialJacobian,'fro'),0.1);
 verifyEqual(testCase,info.objective,objective,'AbsTol',1e-13);
 verifyEqual(testCase,info.maxResidual,norm(residual,inf),'AbsTol',1e-13);
 verifyEqual(testCase,info.gradientInfinityNorm,norm(gradient,inf),'AbsTol',1e-13);
+end
+
+function testCurvatureCacheTracksModelChanges(testCase)
+% Reusing a cache must match a fresh solve after values or dimensions change.
+directions = zeros(2,2,2);
+directions(:,:,1) = [1 0.3;0.2 1];
+directions(:,:,2) = [0.7 0.5;0.4 1.2];
+references = zeros(2,3,2);
+target = [0.2;-0.1;0.05;0.3;-0.15;0.1];
+options = struct('Regularization',0.25,'MaxIterations',1, ...
+    'ResidualTolerance',1e-14,'GradientTolerance',1e-14,'StepTolerance',1e-14);
+for variant = 1:4
+    if variant == 2
+        directions(1,1,2) = 1.4;
+    elseif variant == 3
+        directions = directions(:,1,:);
+        target = target(1:3);
+    elseif variant == 4
+        directions(:,:,2) = 0;
+        references(:,:,2) = [1 0.5 0;0.2 1 0.4];
+    end
+    [cachedBeta,cachedInfo] = MiuraPerturbCorrect(target,directions,references,-[1;2],options);
+    clear MiuraPerturbCorrect
+    [freshBeta,freshInfo] = MiuraPerturbCorrect(target,directions,references,-[1;2],options);
+    verifyEqual(testCase,cachedBeta,freshBeta);
+    verifyEqual(testCase,cachedInfo,freshInfo);
+end
 end
 
 function testRejectedTrialDoesNotOverwriteAcceptedState(testCase)

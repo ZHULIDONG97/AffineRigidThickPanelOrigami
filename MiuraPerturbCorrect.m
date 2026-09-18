@@ -6,9 +6,10 @@ function [masterDisplacement,info] = MiuraPerturbCorrect( ...
 % The solved proximal problem is
 %   min 0.5*||c(deltaXm)||^2
 %       + 0.5*lambda*||deltaXm-targetDeltaXm||^2,
-% using the analytic Jacobian, exact residual curvature, and adaptive
+% using the analytic Jacobian, residual curvature, and adaptive
 % Levenberg-Marquardt damping. No chirality or intersection constraints are
 % evaluated in this first kinematic version.
+% Constant curvature coefficients below a relative 1e-12 cutoff are pruned.
 % Stopping matches RigidOrigamiSimulator: scaled RMS residual <= 1e-8,
 % scaled gradient 2-norm <= 1e-6, or relative step <= 1e-6 (exitflags 1/2/3).
 % ResidualTolerance, GradientTolerance and StepTolerance override these
@@ -49,21 +50,29 @@ referenceMagnitude = sqrt(sum(referenceU.^2,2).*sum(referenceV.^2,2));
 constraintScale = max([1;referenceMagnitude;abs(gij)]);
 nMasterDof = numel(masterDisplacement);
 diagonalIndices = 1:nMasterDof+1:nMasterDof^2;
-% Precompute the distinct coefficients of the symmetric coordinate curvature.
-nFreeMasters = size(directionU,2);
-[curvatureRow,curvatureColumn] = find(triu(true(nFreeMasters)));
-curvatureFactors = (directionU(:,curvatureRow).*directionV(:,curvatureColumn) ...
-    +directionV(:,curvatureRow).*directionU(:,curvatureColumn)).';
-upperIndices = curvatureRow+(curvatureColumn-1)*nFreeMasters;
-lowerIndices = curvatureColumn+(curvatureRow-1)*nFreeMasters;
-curvatureMap = zeros(nFreeMasters);
-curvatureMap(upperIndices) = 1:numel(upperIndices);
-curvatureMap(lowerIndices) = 1:numel(lowerIndices);
-curvatureMap = repmat(curvatureMap(:),3,1);
-blockIndices = (1:nFreeMasters).'+(0:nFreeMasters-1)*nMasterDof;
-blockOffset = nFreeMasters*(nMasterDof+1);
-curvatureIndices = [blockIndices(:);blockIndices(:)+blockOffset; ...
-    blockIndices(:)+2*blockOffset];
+% Cache G(:,i)=Hi(:) across calls; only the constraint directions determine Hi.
+persistent cachedDirections curvatureFactors
+if ~isequal(cachedDirections,constraintDirections)
+    nFreeMasters = size(directionU,2);
+    [curvatureRow,curvatureColumn] = ndgrid(1:nFreeMasters);
+    coordinateCurvature = (directionU(:,curvatureRow(:)).*directionV(:,curvatureColumn(:)) ...
+        +directionV(:,curvatureRow(:)).*directionU(:,curvatureColumn(:))).';
+    % Remove tiny coefficients relative to the model's largest Hi entry.
+    curvatureTolerance = 1e-12*max(abs(coordinateCurvature(:)));
+    if isfinite(curvatureTolerance)
+        coordinateCurvature(abs(coordinateCurvature)<=curvatureTolerance) = 0;
+    end
+    [blockIndex,constraintIndex,curvatureValue] = find(coordinateCurvature);
+    hessianIndex = curvatureRow(blockIndex) ...
+        +(curvatureColumn(blockIndex)-1)*nMasterDof;
+    hessianIndex = hessianIndex(:);
+    blockOffset = nFreeMasters*(nMasterDof+1);
+    % Hi repeats its coordinate block three times, with zero cross blocks.
+    curvatureFactors = sparse([hessianIndex;hessianIndex+blockOffset; ...
+        hessianIndex+2*blockOffset],repmat(constraintIndex,3,1), ...
+        repmat(curvatureValue,3,1),nMasterDof^2,nConstraints);
+    cachedDirections = constraintDirections;
+end
 mu = [];
 exitflag = 0;
 iterations = 0;
@@ -93,10 +102,9 @@ for iteration = 1:maxIterations
         break
     end
 
-    % Assemble exact curvature only when another step is needed.
-    curvatureValues = curvatureFactors*residual;
-    hessian = jacobian.'*jacobian;
-    hessian(curvatureIndices) = hessian(curvatureIndices)+curvatureValues(curvatureMap);
+    % Accumulate all ci*Hi in one sparse multiply; retain the dense small solve.
+    hessian = jacobian.'*jacobian ...
+        +reshape(full(curvatureFactors*residual),nMasterDof,nMasterDof);
     hessian(diagonalIndices) = hessian(diagonalIndices)+regularization;
     hessian = 0.5*(hessian+hessian.');
     if any(~isfinite(hessian(:)))

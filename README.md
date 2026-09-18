@@ -29,6 +29,11 @@ limit: the simulation runs until the maximum absolute hinge angle reaches
 
 LM uses the same stopping criteria as RigidOrigamiSimulator: scaled RMS
 residual `1e-8`, scaled gradient `1e-6`, or relative step `1e-6`.
+Constant constraint Hessians are cached as columns of a sparse matrix, so their
+residual-weighted sum uses one matrix-vector product. Coefficients at or below
+`1e-12` times the largest Hessian coefficient are treated as zero; changing the
+constraint directions rebuilds the cache. The final LM system uses dense Cholesky.
+
 Each step generates node 18's target coordinates by rotating its **current
 corrected position by 1 degree** around hinge 17–24. The difference between the
 target and current coordinates is the drag perturbation. The corrected motion
