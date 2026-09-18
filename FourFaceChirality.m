@@ -342,19 +342,3 @@ scatter3(x(masterNodeIndices),y(masterNodeIndices),z(masterNodeIndices), ...
 %     70,'k','filled')
 axis off; axis equal; axis tight;
 view([5,30])
-
-%% Green panel with its master nodes
-% Isolate the green solid panel and its global master nodes in the folded state.
-greenPanelIndex = 3;
-greenMasterNodes = intersect(masterNodeIndices,panelNodes{greenPanelIndex},'stable');
-figure('Color','w','Name','Green panel and master nodes')
-hold on
-DrawSolidPanels(x,y,z,panels(greenPanelIndex), ...
-    'PanelColors',panelColors(greenPanelIndex,:), ...
-    'FaceAlpha',0.75, ...
-    'LineWidth',panelEdgeWidth);
-scatter3(x(greenMasterNodes),y(greenMasterNodes),z(greenMasterNodes), ...
-    70,'r','filled')
-axis off; axis equal; axis tight;
-view([5,30])
-
