@@ -10,18 +10,19 @@ modelFile = fullfile(codeDir,'four_panel_reference.mat');
 dragNode = 18;
 dragRotationEdge = [17 24];
 dragAngleStep = deg2rad(1);
-nDragSteps = 50;
 regularization = 1e-7;
 maximumRotationAngle = deg2rad(180);
+angleCompletionTolerance = deg2rad(0.001);
 constraintRankTolerance = 1e-10;
 
 if ~isscalar(dragAngleStep) || ~isfinite(dragAngleStep) || dragAngleStep <= 0 || ...
-        nDragSteps < 1 || ...
-        nDragSteps ~= round(nDragSteps) || regularization <= 0 || ...
-        maximumRotationAngle <= 0 || ~isfinite(maximumRotationAngle)
+        regularization <= 0 || ...
+        maximumRotationAngle <= 0 || ~isfinite(maximumRotationAngle) || ...
+        ~isfinite(angleCompletionTolerance) || angleCompletionTolerance <= 0 || ...
+        angleCompletionTolerance >= maximumRotationAngle
     error('demo_miura_drag:InvalidDrag', ...
-        ['Angular increment, step count, and regularization must be positive; ' ...
-         'the rotation-angle limit must be finite and positive.']);
+        ['Angular increment and regularization must be positive; ' ...
+         'the finite angle tolerance must lie between zero and the angle limit.']);
 end
 
 %% Zero-displacement model
@@ -92,15 +93,17 @@ if any(rotationNodeIndices(:) < 1 | rotationNodeIndices(:) > nNodes)
 end
 rotationAngles = RotationAngle( ...
     size(rotationNodeIndices,1),rotationNodeIndices,x0,y0,z0);
-if any(abs(rotationAngles) > ...
+if any(~isfinite(rotationAngles)) || any(abs(rotationAngles) > ...
         maximumRotationAngle+rotationAngleTolerance)
     error('demo_miura_drag:InitialRotationViolation', ...
         'The initial model already exceeds the rotation-angle limit.');
 end
 
-xHistory = zeros(nNodes,nDragSteps+1);
-yHistory = zeros(nNodes,nDragSteps+1);
-zHistory = zeros(nNodes,nDragSteps+1);
+% Grow storage as needed; its initial capacity does not limit the step count.
+historyCapacity = 64;
+xHistory = zeros(nNodes,historyCapacity+1);
+yHistory = zeros(nNodes,historyCapacity+1);
+zHistory = zeros(nNodes,historyCapacity+1);
 xHistory(:,1) = x0;
 yHistory(:,1) = y0;
 zHistory(:,1) = z0;
@@ -110,7 +113,7 @@ masterDisplacement = zeros(3*nFreeMasters,1);
 previousPanelNormal = [];
 maximumResidual = 0;
 maximumAcceptedRotationAngle = max(abs(rotationAngles));
-angleLimitReached = false;
+angleLimitReached = maximumRotationAngle-max(abs(rotationAngles)) <= angleCompletionTolerance;
 attemptedSteps = 0;
 completedSteps = 0;
 rejectedRotationAngle = NaN;
@@ -118,20 +121,29 @@ rejectedRotationEdge = [NaN NaN];
 solverOptions = struct('Regularization',regularization, ...
     'ConstraintTolerance',1e-8,'MaxIterations',150);
 
-% Each attempted drag step makes exactly one LM call, including a rejected last step.
-stepWallTime = zeros(nDragSteps,1);
+% Each attempted drag step makes exactly one LM call, including rejected trials.
+stepWallTime = zeros(historyCapacity,1);
 totalLmCalls = 0;
 totalLmIterations = 0;
 failedCorrections = 0;
 angleLimitTrials = 0;
 perturbationBisections = 0;
 perturbationFraction = 1;
+perturbationScale = 1;
 constraintToleranceExceedances = 0;
 setupTime = toc(simulationTimer);
 setupCpuTime = cputime-simulationCpuStart;
 solveCpuStart = cputime;
 solveTimer = tic;
-for stepIndex = 1:nDragSteps
+while ~angleLimitReached
+    stepIndex = attemptedSteps+1;
+    if stepIndex > historyCapacity
+        historyCapacity = 2*historyCapacity;
+        xHistory(:,historyCapacity+1) = 0;
+        yHistory(:,historyCapacity+1) = 0;
+        zHistory(:,historyCapacity+1) = 0;
+        stepWallTime(historyCapacity,1) = 0;
+    end
     stepTimer = tic;
     faceCoordinates = coordinates(normalFaceNodes,:);
     panelNormal = cross( ...
@@ -164,8 +176,8 @@ for stepIndex = 1:nDragSteps
     dragCoordinatePerturbation = targetDragCoordinates-coordinates(dragNode,:);
     % Bisect only the predicted coordinates. These angle checks do not call LM.
     lowerFraction = 0;
-    upperFraction = 1;
-    perturbationFraction = 1;
+    upperFraction = perturbationScale;
+    perturbationFraction = perturbationScale;
     targetMasterDisplacement = masterDisplacement;
     for predictionIndex = 0:maximumPerturbationBisections
         predictedMasterDisplacement = masterDisplacement;
@@ -185,7 +197,7 @@ for stepIndex = 1:nDragSteps
                 predictedMaximumAngle <= maximumRotationAngle+rotationAngleTolerance
             lowerFraction = perturbationFraction;
             targetMasterDisplacement = predictedMasterDisplacement;
-            if perturbationFraction == 1 || ...
+            if perturbationFraction == perturbationScale || ...
                     maximumRotationAngle-predictedMaximumAngle <= angleBoundaryTolerance
                 break
             end
@@ -199,7 +211,6 @@ for stepIndex = 1:nDragSteps
     end
     perturbationFraction = lowerFraction;
     if perturbationFraction == 0
-        angleLimitReached = true;
         fprintf(['Step %d stopped: no admissible positive perturbation ' ...
             'was found within the angle-search limit.\n'],stepIndex);
         break
@@ -239,16 +250,25 @@ for stepIndex = 1:nDragSteps
     end
     [trialMaximumRotationAngle,rotationIndex] = max(abs(trialRotationAngles));
 
-    % LM can change the predicted angles; reject an overshoot without another solve.
+    % Keep an overshoot out of the history and halve the next step's coordinates.
     if trialMaximumRotationAngle > maximumRotationAngle+rotationAngleTolerance
-        angleLimitReached = true;
         angleLimitTrials = angleLimitTrials+1;
         rejectedRotationAngle = trialMaximumRotationAngle;
         rejectedRotationEdge = rotationEdges(rotationIndex,:);
-        fprintf(['Step %d stopped at hinge [%d %d]: trial %.6f deg exceeds ' ...
-            'the %.6f deg limit. The previous state was retained.\n'], ...
+        fprintf(['Step %d rejected at hinge [%d %d]: trial %.6f deg exceeds ' ...
+            'the %.6f deg limit. Halving the next coordinate perturbation.\n'], ...
             stepIndex,rejectedRotationEdge(1),rejectedRotationEdge(2), ...
             rad2deg(rejectedRotationAngle),rad2deg(maximumRotationAngle));
+        stepWallTime(stepIndex) = toc(stepTimer);
+        perturbationScale = 0.5*perturbationFraction;
+        continue
+    end
+
+    % An unchanged state would repeat the same target and deterministic LM solve.
+    angleLimitReached = maximumRotationAngle-trialMaximumRotationAngle <= angleCompletionTolerance;
+    if ~angleLimitReached && isequal(trialMasterDisplacement,masterDisplacement)
+        failedCorrections = failedCorrections+1;
+        fprintf('Step %d stopped: LM returned an unchanged state before the angle target.\n',stepIndex);
         stepWallTime(stepIndex) = toc(stepTimer);
         break
     end
@@ -258,18 +278,18 @@ for stepIndex = 1:nDragSteps
     coordinates = trialCoordinates;
     previousPanelNormal = panelNormal;
     rotationAngles = trialRotationAngles;
-    xHistory(:,stepIndex+1) = coordinates(:,1);
-    yHistory(:,stepIndex+1) = coordinates(:,2);
-    zHistory(:,stepIndex+1) = coordinates(:,3);
-    completedSteps = stepIndex;
+    completedSteps = completedSteps+1;
+    xHistory(:,completedSteps+1) = coordinates(:,1);
+    yHistory(:,completedSteps+1) = coordinates(:,2);
+    zHistory(:,completedSteps+1) = coordinates(:,3);
     maximumResidual = max(maximumResidual,solverInfo.maxResidual);
     maximumAcceptedRotationAngle = max( ...
         maximumAcceptedRotationAngle,trialMaximumRotationAngle);
     constraintToleranceExceedances = constraintToleranceExceedances ...
         +double(~solverInfo.constraintSatisfied);
-    fprintf(['Step %d/%d: coordinate perturbation fraction %.6g, one LM call, %d iterations, ' ...
-        'max|c| %.3e, max angle %.3f deg\n'], ...
-        stepIndex,nDragSteps,perturbationFraction, ...
+    fprintf(['Step %d: coordinate perturbation fraction %.6g, one LM call, %d iterations, ' ...
+        'max|c| %.3e, max angle %.6f deg\n'], ...
+        stepIndex,perturbationFraction, ...
         solverInfo.iterations,solverInfo.maxResidual, ...
         rad2deg(trialMaximumRotationAngle));
     stepWallTime(stepIndex) = toc(stepTimer);
@@ -292,10 +312,16 @@ zHistory = zHistory(:,1:completedSteps+1);
 x_fs = xHistory(:,end);
 y_fs = yHistory(:,end);
 z_fs = zHistory(:,end);
-fprintf(['Finished %d accepted / %d attempted / %d requested steps in %.3f s; ' ...
+fprintf(['Finished %d accepted / %d attempted steps in %.3f s; ' ...
     'max|c| %.3e, max accepted angle %.6f deg.\n'], ...
-    completedSteps,attemptedSteps,nDragSteps,solveTime, ...
+    completedSteps,attemptedSteps,solveTime, ...
     maximumResidual,rad2deg(maximumAcceptedRotationAngle));
+if angleLimitReached
+    fprintf('Reached %.6f deg within %.6f deg of the angle target.\n', ...
+        rad2deg(max(abs(rotationAngles))),rad2deg(angleCompletionTolerance));
+else
+    fprintf('The angle target was not reached; the last accepted state is retained.\n');
+end
 
 % CPU time sums MATLAB process/thread work; wall time is elapsed time.
 fprintf(['Timing (animation excluded): setup %.6f s wall / %.6f s CPU; ' ...
@@ -389,6 +415,6 @@ for historyIndex = 1:completedSteps+1
         'VData',arrowDirection(2), ...
         'WData',arrowDirection(3));
     title(animationAxes,sprintf('Node %d: step %d/%d', ...
-        dragNode,historyIndex-1,nDragSteps));
+        dragNode,historyIndex-1,completedSteps));
     drawnow;
 end

@@ -58,20 +58,58 @@ verifyEqual(testCase,state.zHistory,repmat(state.initialCoordinates(:,3),1,4));
 verifyTiming(testCase,state);
 end
 
-function testAngleRejectionDoesNotCallLmAgain(testCase)
-state = runIsolatedDemo('angle',4);
+function testRejectedAttemptPreservesStateAndUsesOneLmCall(testCase)
+state = runIsolatedDemo('angle',1);
 verifyEqual(testCase,state.attemptedSteps,1);
 verifyEqual(testCase,state.completedSteps,0);
 verifyEqual(testCase,state.totalLmCalls,1);
 verifyEqual(testCase,size(state.targets,2),1);
 verifyEqual(testCase,state.failedCorrections,0);
 verifyEqual(testCase,state.angleLimitTrials,1);
-verifyTrue(testCase,state.angleLimitReached);
+verifyFalse(testCase,state.angleLimitReached);
 verifyEqual(testCase,state.xHistory,state.initialCoordinates(:,1));
 verifyEqual(testCase,state.yHistory,state.initialCoordinates(:,2));
 verifyEqual(testCase,state.zHistory,state.initialCoordinates(:,3));
 verifyEqual(testCase,state.maximumResidual,0);
 verifyEqual(testCase,state.maximumAcceptedRotationAngle,deg2rad(170),'AbsTol',1e-14);
+verifyTiming(testCase,state);
+end
+
+function testOvershootHalvesNextTargetAndKeepsHistoryAcceptedOnly(testCase)
+state = runIsolatedDemo('overshoot-recovery',2);
+verifyEqual(testCase,state.attemptedSteps,2);
+verifyEqual(testCase,state.completedSteps,1);
+verifyEqual(testCase,state.totalLmCalls,2);
+verifyEqual(testCase,state.totalLmIterations,6);
+verifyEqual(testCase,size(state.targets,2),2);
+verifyEqual(testCase,state.failedCorrections,0);
+verifyEqual(testCase,state.angleLimitTrials,1);
+verifyTrue(testCase,state.angleLimitReached);
+verifyEqual(testCase,state.perturbationFraction,0.5);
+verifyEqual(testCase,state.targets(:,2),0.5*state.targets(:,1),'AbsTol',1e-14);
+verifyEqual(testCase,size(state.xHistory,2),2);
+verifyEqual(testCase,[state.xHistory(:,1),state.yHistory(:,1),state.zHistory(:,1)], ...
+    state.initialCoordinates);
+finalDragPosition = [state.xHistory(state.dragNode,end), ...
+    state.yHistory(state.dragNode,end),state.zHistory(state.dragNode,end)];
+verifyEqual(testCase,finalDragPosition,state.initialCoordinates(state.dragNode,:) ...
+    +state.targets(state.dragDofIndices,2).','AbsTol',1e-14);
+verifyTiming(testCase,state);
+end
+
+function testUnchangedCorrectionStopsBeforeAngleGoal(testCase)
+state = runIsolatedDemo('stagnation',4);
+verifyEqual(testCase,state.attemptedSteps,1);
+verifyEqual(testCase,state.completedSteps,0);
+verifyEqual(testCase,state.totalLmCalls,1);
+verifyEqual(testCase,size(state.targets,2),1);
+verifyGreaterThan(testCase,state.solverInfo.exitflag,0);
+verifyEqual(testCase,state.failedCorrections,1);
+verifyEqual(testCase,state.angleLimitTrials,0);
+verifyFalse(testCase,state.angleLimitReached);
+verifyEqual(testCase,state.xHistory,state.initialCoordinates(:,1));
+verifyEqual(testCase,state.yHistory,state.initialCoordinates(:,2));
+verifyEqual(testCase,state.zHistory,state.initialCoordinates(:,3));
 verifyTiming(testCase,state);
 end
 
@@ -106,6 +144,35 @@ verifyEqual(testCase,state.yHistory,state.initialCoordinates(:,2));
 verifyEqual(testCase,state.zHistory,state.initialCoordinates(:,3));
 verifyEqual(testCase,state.maximumResidual,0);
 verifyEqual(testCase,state.maximumAcceptedRotationAngle,0);
+verifyTiming(testCase,state);
+end
+
+function testStopsNaturallyAtAngleGoal(testCase)
+% Run beyond both the former 50-step cap and initial 64-frame allocation.
+state = runIsolatedDemo('terminal',66);
+verifyEqual(testCase,state.attemptedSteps,66);
+verifyEqual(testCase,state.completedSteps,66);
+verifyEqual(testCase,state.totalLmCalls,66);
+verifyEqual(testCase,size(state.targets,2),66);
+verifyEqual(testCase,state.failedCorrections,0);
+verifyEqual(testCase,state.angleLimitTrials,0);
+verifyTrue(testCase,state.angleLimitReached);
+verifyLessThanOrEqual(testCase, ...
+    abs(state.maximumAcceptedRotationAngle-pi),state.angleCompletionTolerance);
+verifyEqual(testCase,size(state.xHistory,2),67);
+verifyTiming(testCase,state);
+end
+
+function testInitiallyTerminalStateMakesNoLmCall(testCase)
+state = runIsolatedDemo('initial-terminal',0);
+verifyEqual(testCase,state.attemptedSteps,0);
+verifyEqual(testCase,state.completedSteps,0);
+verifyEqual(testCase,state.totalLmCalls,0);
+verifyEmpty(testCase,state.targets);
+verifyTrue(testCase,state.angleLimitReached);
+verifyEqual(testCase,state.xHistory,state.initialCoordinates(:,1));
+verifyEqual(testCase,state.yHistory,state.initialCoordinates(:,2));
+verifyEqual(testCase,state.zHistory,state.initialCoordinates(:,3));
 verifyTiming(testCase,state);
 end
 
@@ -162,6 +229,10 @@ end
 function verifyTiming(testCase,state)
 verifyEqual(testCase,numel(state.stepWallTime),state.attemptedSteps);
 verifyTrue(testCase,all(isfinite(state.stepWallTime)));
+if state.attemptedSteps == 0
+    verifyTrue(testCase,isnan(state.averageStepWallTime));
+    return
+end
 verifyTrue(testCase,isfinite(state.averageStepWallTime));
 verifyGreaterThanOrEqual(testCase,state.averageStepWallTime,0);
 verifyEqual(testCase,state.averageStepWallTime, ...
@@ -188,9 +259,19 @@ animationStart = strfind(scriptText,'%% Animation');
 assert(isscalar(animationStart),'The demo must have one animation section.');
 scriptText = scriptText(1:animationStart-1);
 scriptText = regexprep(scriptText,'(?m)^(clear|clc|close all);[^\r\n]*(\r?\n|$)','');
-stepSetting = '(?m)^nDragSteps\s*=\s*\d+\s*;';
-assert(isscalar(regexp(scriptText,stepSetting)),'The step setting was not found.');
-scriptText = regexprep(scriptText,stepSetting,sprintf('nDragSteps = %d;',nSteps));
+if ~strcmp(mode,'terminal') && ~strcmp(mode,'initial-terminal')
+    % Bound only the isolated unit-test scenario, never the production loop.
+    timerMarker = '    stepTimer = tic;';
+    assert(isscalar(strfind(scriptText,timerMarker)),'The step timer was not found.');
+    scriptText = strrep(scriptText,timerMarker, ...
+        [sprintf('    if attemptedSteps >= %d, break; end\n',nSteps),timerMarker]);
+end
+if strcmp(mode,'held-state')
+    stagnationGuard = 'if ~angleLimitReached && isequal(trialMasterDisplacement,masterDisplacement)';
+    assert(contains(scriptText,stagnationGuard),'The stagnation guard was not found.');
+    scriptText = strrep(scriptText,stagnationGuard, ...
+        ['if false && ',stagnationGuard(4:end)]);
+end
 if strcmp(mode,'real')
     constraintSetting = '''ConstraintTolerance'',1e-8';
     assert(contains(scriptText,constraintSetting),'The raw feasibility setting was not found.');
@@ -201,7 +282,8 @@ if strcmp(mode,'real')
 else
     expectedCalls = nSteps;
     exitFlag = 2;
-    if strcmp(mode,'failure') || strcmp(mode,'angle') || strcmp(mode,'nonfinite-angle')
+    if strcmp(mode,'failure') || strcmp(mode,'angle') || ...
+            strcmp(mode,'nonfinite-angle') || strcmp(mode,'stagnation')
         expectedCalls = 1;
     end
     if strcmp(mode,'failure')
@@ -218,7 +300,7 @@ else
         'info=struct(''exitflag'',%d,''iterations'',3,''maxResidual'',2e-8, ...\n' ...
         '    ''constraintSatisfied'',false);\n' ...
         'end\n'],expectedCalls,exitFlag);
-    if strcmp(mode,'held-state')
+    if strcmp(mode,'held-state') || strcmp(mode,'stagnation')
         mockSolver = strrep(mockSolver,'beta=target;','beta=zeros(size(target));');
     end
     writeText(fullfile(sandboxDirectory,'MiuraPerturbCorrect.m'),mockSolver);
@@ -229,13 +311,26 @@ else
             'logPath=fullfile(fileparts(mfilename(''fullpath'')),''mock_targets.mat'');' newline ...
             'if isfile(logPath), angle=deg2rad(-170); else, angle=deg2rad(170); end' newline ...
             'angles=repmat(angle,nAngles,1);' newline 'end' newline];
+    elseif strcmp(mode,'overshoot-recovery')
+        mockAngle = [ ...
+            'function angles = RotationAngle(nAngles,varargin)' newline ...
+            'persistent rejectedFirst;' newline ...
+            'logPath=fullfile(fileparts(mfilename(''fullpath'')),''mock_targets.mat'');' newline ...
+            'calls=0; if isfile(logPath), data=load(logPath,''targets''); calls=size(data.targets,2); end' newline ...
+            'if calls>=2, angle=pi;' newline ...
+            'elseif calls==1 && isempty(rejectedFirst), angle=deg2rad(-170); rejectedFirst=true;' newline ...
+            'else, angle=deg2rad(170); end' newline ...
+            'angles=repmat(angle,nAngles,1);' newline 'end' newline];
     elseif strcmp(mode,'nonfinite-angle')
         mockAngle = [ ...
             'function angles = RotationAngle(nAngles,varargin)' newline ...
             'logPath=fullfile(fileparts(mfilename(''fullpath'')),''mock_targets.mat'');' newline ...
             'if isfile(logPath), angle=NaN; else, angle=0; end' newline ...
             'angles=repmat(angle,nAngles,1);' newline 'end' newline];
-    elseif strcmp(mode,'predictor')
+    elseif strcmp(mode,'initial-terminal')
+        mockAngle = ['function angles = RotationAngle(nAngles,varargin)' newline ...
+            'angles=pi*ones(nAngles,1);' newline 'end' newline];
+    elseif strcmp(mode,'predictor') || strcmp(mode,'terminal')
         mockAngle = [ ...
             'function angles = RotationAngle(nAngles,~,x,y,z)' newline ...
             'persistent initialRadial;' newline ...
@@ -249,6 +344,9 @@ else
             'angle=deg2rad(170+20*angleDegree);' newline ...
             'angles=repmat(atan2(sin(angle),cos(angle)),nAngles,1);' newline ...
             'end' newline];
+        if strcmp(mode,'terminal')
+            mockAngle = strrep(mockAngle,'170+20*angleDegree','114+angleDegree');
+        end
     else
         mockAngle = ['function angles = RotationAngle(nAngles,varargin)' newline ...
             'angles=zeros(nAngles,1);' newline 'end' newline];
@@ -270,11 +368,20 @@ state = struct('attemptedSteps',attemptedSteps,'completedSteps',completedSteps, 
     'maximumAcceptedRotationAngle',maximumAcceptedRotationAngle, ...
     'stepWallTime',stepWallTime,'averageStepWallTime',averageStepWallTime, ...
     'solveTime',solveTime,'xHistory',xHistory,'yHistory',yHistory,'zHistory',zHistory, ...
-    'initialCoordinates',[x0,y0,z0],'solverInfo',solverInfo,'dragDofIndices',dragDofIndices, ...
-    'dragNode',dragNode,'dragRotationEdge',dragRotationEdge,'dragAngleStep',dragAngleStep);
+    'initialCoordinates',[x0,y0,z0],'dragDofIndices',dragDofIndices, ...
+    'dragNode',dragNode,'dragRotationEdge',dragRotationEdge,'dragAngleStep',dragAngleStep, ...
+    'angleCompletionTolerance',angleCompletionTolerance);
+if exist('solverInfo','var')
+    state.solverInfo = solverInfo;
+end
 if ~strcmp(mode,'real')
-    targetData = load(fullfile(sandboxDirectory,'mock_targets.mat'),'targets');
-    state.targets = targetData.targets;
+    targetLog = fullfile(sandboxDirectory,'mock_targets.mat');
+    if isfile(targetLog)
+        targetData = load(targetLog,'targets');
+        state.targets = targetData.targets;
+    else
+        state.targets = zeros(3*nFreeMasters,0);
+    end
 end
 end
 
