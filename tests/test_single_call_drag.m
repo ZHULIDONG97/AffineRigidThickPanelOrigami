@@ -228,18 +228,13 @@ end
 
 function verifyTiming(testCase,state)
 verifyEqual(testCase,numel(state.stepWallTime),state.attemptedSteps);
-verifyEqual(testCase,numel(state.stepCpuTime),state.attemptedSteps);
 verifyTrue(testCase,all(isfinite(state.stepWallTime)));
-verifyTrue(testCase,all(isfinite(state.stepCpuTime)));
-verifyEqual(testCase,state.solveTime,sum(state.stepWallTime));
-verifyEqual(testCase,state.solveCpuTime,sum(state.stepCpuTime));
-% Mock solver durations exclude all drag-loop work and count rejected calls too.
-if isfield(state,'targets')
-    verifyEqual(testCase,state.stepWallTime,0.002*ones(state.attemptedSteps,1));
-    verifyEqual(testCase,state.stepCpuTime,0.003*ones(state.attemptedSteps,1));
-end
+verifyGreaterThanOrEqual(testCase,state.solveTime,sum(state.stepWallTime));
+verifyTrue(testCase,isfinite(state.solveCpuTime));
+verifyGreaterThanOrEqual(testCase,state.solveCpuTime,0);
 if state.attemptedSteps == 0
     verifyTrue(testCase,isnan(state.averageStepWallTime));
+    verifyTrue(testCase,isnan(state.averageStepCpuTime));
     return
 end
 verifyTrue(testCase,isfinite(state.averageStepWallTime));
@@ -380,7 +375,7 @@ state = struct('attemptedSteps',attemptedSteps,'completedSteps',completedSteps, 
     'perturbationFraction',perturbationFraction, ...
     'maximumAcceptedRotationAngle',maximumAcceptedRotationAngle, ...
     'stepWallTime',stepWallTime,'averageStepWallTime',averageStepWallTime, ...
-    'stepCpuTime',stepCpuTime,'averageStepCpuTime',averageStepCpuTime,'solveCpuTime',solveCpuTime, ...
+    'averageStepCpuTime',averageStepCpuTime,'solveCpuTime',solveCpuTime, ...
     'solveTime',solveTime,'xHistory',xHistory,'yHistory',yHistory,'zHistory',zHistory, ...
     'initialCoordinates',[x0,y0,z0],'dragDofIndices',dragDofIndices, ...
     'dragNode',dragNode,'dragRotationEdge',dragRotationEdge,'dragAngleStep',dragAngleStep, ...
