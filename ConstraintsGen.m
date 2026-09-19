@@ -18,8 +18,7 @@ z = z0 + mappedB * beta(2*r+1:3*r);
 ceq = AffineMetricResidualJacobian(beta,rigidityDirections, ...
     rigidityReferences,rigidityOffsets);
 
-% Thick-panel orientation is a chirality inequality:
-% chiMargin - sign(chi0) * chi(beta) <= 0.
+% The normalized triple product preserves the prescribed panel orientation.
 nchi = size(Cchi,1);
 chiValue = zeros(nchi,1);
 chiLengthScale = zeros(nchi,1);
@@ -41,9 +40,7 @@ for i=1:nchi
     orientationIneq(i) = chiMargin / chiScale -  chiValue(i);
 end
 
-% Mountain-valley fold branch inequalities. Cfold rows are
-% [refNodeFaceI creaseStart creaseEnd refNodeFaceJ sign], with sign=+1
-% for the valley branch used here and sign=-1 for the opposite branch.
+% Cfold rows: [refNodeFaceI creaseStart creaseEnd refNodeFaceJ sign].
 nfold = size(Cfold,1);
 foldAngle = zeros(nfold,1);
 foldIneq = zeros(nfold,1);

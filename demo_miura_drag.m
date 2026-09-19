@@ -39,10 +39,9 @@ mappedBFull = model.T\model.B;
 [~,fixedMasterLocalIndices] = ismember(fixedNodes,mainPointIndices);
 freeMasterLocalIndices = setdiff(1:numel(mainPointIndices), ...
     fixedMasterLocalIndices,'stable');
-dragMasterLocalIndex = find(mainPointIndices == dragNode,1);
 dragMasterFreeIndex = find( ...
-    freeMasterLocalIndices == dragMasterLocalIndex,1);
-if isempty(dragMasterLocalIndex) || isempty(dragMasterFreeIndex)
+    mainPointIndices(freeMasterLocalIndices) == dragNode,1);
+if isempty(dragMasterFreeIndex)
     error('demo_miura_drag:InvalidDragNode', ...
         'dragNode must be an unfixed master node.');
 end

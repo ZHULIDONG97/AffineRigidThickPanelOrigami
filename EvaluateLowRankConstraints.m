@@ -11,14 +11,9 @@ if nargout > 1
 end
 
 if nargout > 2
-    r = size(directionU,2);
     % Reuse the same reduced curvature block for the three coordinates.
     coordinateCurvature = directionU.'*(residual.*directionV) ...
         +directionV.'*(residual.*directionU);
-    residualCurvature = zeros(3*r,3*r);
-    for coordinate = 1:3
-        indices = (coordinate-1)*r+(1:r);
-        residualCurvature(indices,indices) = coordinateCurvature;
-    end
+    residualCurvature = blkdiag(coordinateCurvature,coordinateCurvature,coordinateCurvature);
 end
 end

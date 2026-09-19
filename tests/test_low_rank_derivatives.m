@@ -36,6 +36,13 @@ rowInput = AffineMetricResidualJacobian( ...
 verifyEqual(testCase,rowInput,actual,'AbsTol',5e-14);
 end
 
+function testPenaltyUsesOnlyMetricResidual(testCase)
+data = testCase.TestData;
+actual = equalityPenaltyObjective(data.beta,1e6,data.directions,data.references,data.gij);
+expected = 0.5e6*sum(scalarResidual(data.beta,data.directions,data.references,data.gij).^2);
+verifyEqual(testCase,actual,expected,'RelTol',1e-13);
+end
+
 function testJacobianMatchesCentralDifference(testCase)
 data = testCase.TestData;
 [~,jacobian] = AffineMetricResidualJacobian( ...

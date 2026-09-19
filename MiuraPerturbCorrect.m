@@ -2,18 +2,9 @@ function [masterDisplacement,info] = MiuraPerturbCorrect( ...
     targetMasterDisplacement,constraintDirections,referenceComponents, ...
     gij,options)
 %MIURAPERTURBCORRECT Project a perturbed state onto fixed quadratic constraints.
-%
-% The solved proximal problem is
-%   min 0.5*||c(deltaXm)||^2
-%       + 0.5*lambda*||deltaXm-targetDeltaXm||^2,
-% using the analytic Jacobian, residual curvature, and adaptive
-% Levenberg-Marquardt damping. No chirality or intersection constraints are
-% evaluated in this first kinematic version.
-% Constant curvature coefficients below a relative 1e-12 cutoff are pruned.
-% Stopping matches RigidOrigamiSimulator: scaled RMS residual <= 1e-8,
-% scaled gradient 2-norm <= 1e-6, or relative step <= 1e-6 (exitflags 1/2/3).
-% ResidualTolerance, GradientTolerance and StepTolerance override these
-% defaults. ConstraintTolerance independently tests the raw maximum residual.
+% Exact-curvature LM minimizes 0.5*||c(beta)||^2 + 0.5*lambda*||beta-target||^2.
+% Exitflags 1/2/3: scaled residual, scaled gradient, relative step (RigidOrigamiSimulator).
+% ConstraintTolerance separately checks the raw maximum residual.
 
 if isempty(options)
     options = struct();
@@ -189,7 +180,6 @@ finalTargetDifference = masterDisplacement-targetMasterDisplacement;
 finalGradient = jacobian.'*residual ...
     +regularization*finalTargetDifference;
 maxResidual = norm(residual,inf);
-gradientInfinityNorm = norm(finalGradient,inf);
 finalObjective = 0.5*(residual.'*residual) ...
     +0.5*regularization*(finalTargetDifference.'*finalTargetDifference);
 if isempty(mu)
@@ -203,7 +193,7 @@ info.newtonWallTime = newtonWallTime;
 info.newtonCpuTime = newtonCpuTime;
 info.finalDamping = mu;
 info.maxResidual = maxResidual;
-info.gradientInfinityNorm = gradientInfinityNorm;
+info.gradientInfinityNorm = norm(finalGradient,inf);
 info.constraintMeasure = norm(residual)/(sqrt(nConstraints)*constraintScale);
 info.gradientMeasure = norm(finalGradient)/max(1,sqrt(2*finalObjective));
 info.relativeStep = relativeStep;

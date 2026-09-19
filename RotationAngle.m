@@ -7,14 +7,9 @@ for i = 1:nei
     i3 = iRotation(i,3);
     i4 = iRotation(i,4);
 
-    x1 = x(i1);  y1 = y(i1);  z1 = z(i1);
-    x2 = x(i2);  y2 = y(i2);  z2 = z(i2);
-    x3 = x(i3);  y3 = y(i3);  z3 = z(i3);
-    x4 = x(i4);  y4 = y(i4);  z4 = z(i4);
-
-    rij = [x1-x2,y1-y2,z1-z2];
-    rkj = [x3-x2,y3-y2,z3-z2];
-    rkl = [x3-x4,y3-y4,z3-z4];
+    rij = [x(i1)-x(i2),y(i1)-y(i2),z(i1)-z(i2)];
+    rkj = [x(i3)-x(i2),y(i3)-y(i2),z(i3)-z(i2)];
+    rkl = [x(i3)-x(i4),y(i3)-y(i4),z(i3)-z(i4)];
 
     m = cross(rkj,rij);
     n = cross(rkj,rkl);
